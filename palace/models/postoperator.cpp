@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <functional>
 #include <set>
 #include <string>
 #include "drivers/boundarymodesolver.hpp"
@@ -18,6 +19,7 @@
 #include "models/materialoperator.hpp"
 #include "models/spaceoperator.hpp"
 #include "models/surfacecurrentoperator.hpp"
+#include "models/portrenormalization.hpp"
 #include "models/waveportoperator.hpp"
 #include "utils/communication.hpp"
 #include "utils/constants.hpp"
@@ -1363,43 +1365,18 @@ void PostOperator<solver_t>::MeasureSParameter() const
                        fem_op->GetWavePortOp().GetPort(drive_port_idx).d_offset)
             : std::complex<double>{1.0, 0.0};
 
-    // Iterate over observation lumped ports.
+    // Subtract the unit incident wave from the drive port's own total-field projection to
+    // get the raw reflection coefficient, referenced to the real reference resistance
+    // R_ref (lumped: R or the unit reference for a purely reactive port; wave: implicit
+    // modal impedance). Off-diagonal entries are raw transmission b-amplitudes at R_ref.
     for (const auto &[idx, data] : fem_op->GetLumpedPortOp())
     {
       auto &vi = measurement_cache.lumped_port_vi.at(idx);
       if (drive_port_type == PortType::LumpedPort && idx == drive_port_idx)
       {
-        // vi.S is the total-field projection referenced to the real reference resistance
-        // R_ref; subtracting the unit incident wave gives the reflection coefficient S_raw
-        // referenced to R_ref.
         vi.S.real(vi.S.real() - 1.0);
-
-        // For a reactive excited port, renormalize the reflection from the real reference
-        // R_ref to the port's true complex reference impedance Z_ref(ω) = R ‖ (iωL) ‖
-        // (1/iωC), using the HFSS conjugate-match (Kurokawa power-wave) convention:
-        //     S_gen = (Z_in − Z_ref*) / (Z_in + Z_ref),   Z_in = R_ref (1+S_raw)/(1−S_raw).
-        // The closed form below is algebraically identical but singularity-free at S_raw=1,
-        // and reduces exactly to S_raw when Z_ref = R_ref (real). A purely resistive port
-        // (HasReactance() == false) is left untouched so its result is bit-identical.
-        if (data.HasReactance())
-        {
-          const double R_ref = data.GetExcitationRefResistance();
-          const std::complex<double> Z_ref = data.GetCharacteristicImpedance(
-              measurement_cache.freq.real(), LumpedPortData::Branch::TOTAL);
-          const std::complex<double> S_raw = vi.S;
-          vi.S = ((R_ref - std::conj(Z_ref)) + (R_ref + std::conj(Z_ref)) * S_raw) /
-                 ((R_ref + Z_ref) + (R_ref - Z_ref) * S_raw);
-        }
       }
-      // Lumped observation has no d_offset — only the source-side factor applies.
-      vi.S *= src_deembed;
-
-      Mpi::Print(" {0} = {1:+.3e}{2:+.3e}i, |{0}| = {3:+.3e}, arg({0}) = {4:+.3e}\n",
-                 format("S[{}][{}]", idx, drive_port_idx), vi.S.real(), vi.S.imag(),
-                 Measurement::Magnitude(vi.S), Measurement::Phase(vi.S));
     }
-
-    // Iterate over observation wave ports.
     for (const auto &[idx, data] : fem_op->GetWavePortOp())
     {
       auto &vi = measurement_cache.wave_port_vi.at(idx);
@@ -1407,10 +1384,114 @@ void PostOperator<solver_t>::MeasureSParameter() const
       {
         vi.S.real(vi.S.real() - 1.0);
       }
-      // Apply both source and observation de-embedding factors.
-      vi.S *= src_deembed;
-      vi.S *= std::exp(1i * data.kn0 * data.d_offset);
+    }
 
+    // Renormalize this measured column from the real reference R_ref to the true complex
+    // reference impedance Z_ref(ω) for reactive lumped ports, using the conjugate-match
+    // (Kurokawa power-wave) transform. Only lumped ports can be reactive; wave ports and
+    // resistive lumped ports have Γ = 0 and are unchanged. The column solve is exact for
+    // the drive reflection and for transmission into any port whose Γ-row is available in
+    // this column: that always includes the (reactive) drive itself and every resistive
+    // port. Transmission into a *reactive observation* port additionally needs that port's
+    // own measured row (i.e. it must be excited too); when it is not, its Γ is dropped here
+    // (kept at R_ref) and a one-time warning is issued below in the finalize path.
+    //
+    // Build a stable port index list (lumped ports first, then wave ports — matching the
+    // synthesis/basis ordering) and the raw column S_raw[:, drive] over it.
+    if (drive_port_type == PortType::LumpedPort || drive_port_type == PortType::WavePort)
+    {
+      std::vector<std::complex<double>> S_col;
+      std::vector<port_renorm::Coefficients> coeffs;
+      std::vector<std::function<void(std::complex<double>)>> write_back;
+      int drive_index = -1;
+      int col_i = 0;
+      const double omega_re = measurement_cache.freq.real();
+
+      for (const auto &[idx, data] : fem_op->GetLumpedPortOp())
+      {
+        auto &vi = measurement_cache.lumped_port_vi.at(idx);
+        S_col.push_back(vi.S);
+        // A reactive lumped port is renormalized to its complex Z_ref only if it is the
+        // drive (its row is this column) — reactive observation ports need their own
+        // excitation column and are handled by the finalize accumulation path.
+        if (data.HasReactance() &&
+            (drive_port_type == PortType::LumpedPort && idx == drive_port_idx))
+        {
+          const double R_ref = data.GetExcitationRefResistance();
+          const std::complex<double> Z_ref =
+              data.GetCharacteristicImpedance(omega_re, LumpedPortData::Branch::TOTAL);
+          coeffs.push_back(port_renorm::ComputeCoefficients(R_ref, Z_ref));
+        }
+        else
+        {
+          coeffs.push_back(port_renorm::Coefficients{});  // Γ=0, A=1 (unchanged)
+        }
+        if (drive_port_type == PortType::LumpedPort && idx == drive_port_idx)
+        {
+          drive_index = col_i;
+        }
+        write_back.emplace_back([&vi](std::complex<double> s) { vi.S = s; });
+        col_i++;
+      }
+      for (const auto &[idx, data] : fem_op->GetWavePortOp())
+      {
+        auto &vi = measurement_cache.wave_port_vi.at(idx);
+        S_col.push_back(vi.S);
+        coeffs.push_back(port_renorm::Coefficients{});  // wave ports: Γ=0 here
+        if (drive_port_type == PortType::WavePort && idx == drive_port_idx)
+        {
+          drive_index = col_i;
+        }
+        // Wave observation ports also carry a d_offset de-embedding factor.
+        const std::complex<double> wp_deembed = std::exp(1i * data.kn0 * data.d_offset);
+        write_back.emplace_back(
+            [&vi, wp_deembed](std::complex<double> s) { vi.S = s * wp_deembed; });
+        col_i++;
+      }
+
+      const int n = static_cast<int>(S_col.size());
+      const bool any_reactive =
+          std::any_of(coeffs.begin(), coeffs.end(),
+                      [](const auto &c) { return std::abs(c.gamma) > 0.0; });
+
+      std::vector<std::complex<double>> S_new;
+      if (any_reactive && drive_index >= 0)
+      {
+        // Only the drive column is measured here, and only the drive's Γ is nonzero (its
+        // own row is the column). Build a padded n×n with the measured column placed at
+        // drive_index and the drive's row filled from the column (reciprocity of the raw,
+        // real-referenced matrix), zeros elsewhere — sufficient because every other Γ=0
+        // row of (I−ΓS) is the identity, so only the drive row of S is used.
+        std::vector<std::complex<double>> S_full(static_cast<std::size_t>(n) * n, 0.0);
+        for (int r = 0; r < n; r++)
+        {
+          S_full[r * n + drive_index] = S_col[r];  // measured column
+          S_full[drive_index * n + r] = S_col[r];  // drive row (reciprocity)
+        }
+        S_new = port_renorm::RenormalizeColumn(S_full, n, drive_index, coeffs);
+      }
+      else
+      {
+        S_new = S_col;
+      }
+
+      // Apply source-side de-embedding and write back the renormalized column.
+      for (int k = 0; k < n; k++)
+      {
+        write_back[k](S_new[k] * src_deembed);
+      }
+    }
+
+    for (const auto &[idx, data] : fem_op->GetLumpedPortOp())
+    {
+      auto &vi = measurement_cache.lumped_port_vi.at(idx);
+      Mpi::Print(" {0} = {1:+.3e}{2:+.3e}i, |{0}| = {3:+.3e}, arg({0}) = {4:+.3e}\n",
+                 format("S[{}][{}]", idx, drive_port_idx), vi.S.real(), vi.S.imag(),
+                 Measurement::Magnitude(vi.S), Measurement::Phase(vi.S));
+    }
+    for (const auto &[idx, data] : fem_op->GetWavePortOp())
+    {
+      auto &vi = measurement_cache.wave_port_vi.at(idx);
       Mpi::Print(" {0} = {1:+.3e}{2:+.3e}i, |{0}| = {3:+.3e}, arg({0}) = {4:+.3e}\n",
                  format("S[{}][{}]", idx, drive_port_idx), vi.S.real(), vi.S.imag(),
                  Measurement::Magnitude(vi.S), Measurement::Phase(vi.S));
