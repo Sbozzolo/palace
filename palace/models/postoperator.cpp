@@ -1369,7 +1369,27 @@ void PostOperator<solver_t>::MeasureSParameter() const
       auto &vi = measurement_cache.lumped_port_vi.at(idx);
       if (drive_port_type == PortType::LumpedPort && idx == drive_port_idx)
       {
+        // vi.S is the total-field projection referenced to the real reference resistance
+        // R_ref; subtracting the unit incident wave gives the reflection coefficient S_raw
+        // referenced to R_ref.
         vi.S.real(vi.S.real() - 1.0);
+
+        // For a reactive excited port, renormalize the reflection from the real reference
+        // R_ref to the port's true complex reference impedance Z_ref(ω) = R ‖ (iωL) ‖
+        // (1/iωC), using the HFSS conjugate-match (Kurokawa power-wave) convention:
+        //     S_gen = (Z_in − Z_ref*) / (Z_in + Z_ref),   Z_in = R_ref (1+S_raw)/(1−S_raw).
+        // The closed form below is algebraically identical but singularity-free at S_raw=1,
+        // and reduces exactly to S_raw when Z_ref = R_ref (real). A purely resistive port
+        // (HasReactance() == false) is left untouched so its result is bit-identical.
+        if (data.HasReactance())
+        {
+          const double R_ref = data.GetExcitationRefResistance();
+          const std::complex<double> Z_ref = data.GetCharacteristicImpedance(
+              measurement_cache.freq.real(), LumpedPortData::Branch::TOTAL);
+          const std::complex<double> S_raw = vi.S;
+          vi.S = ((R_ref - std::conj(Z_ref)) + (R_ref + std::conj(Z_ref)) * S_raw) /
+                 ((R_ref + Z_ref) + (R_ref - Z_ref) * S_raw);
+        }
       }
       // Lumped observation has no d_offset — only the source-side factor applies.
       vi.S *= src_deembed;

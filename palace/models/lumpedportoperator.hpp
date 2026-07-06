@@ -91,6 +91,20 @@ public:
 
   constexpr bool HasExcitation() const { return excitation != 0; }
 
+  // True if the port carries reactance (L and/or C) in addition to (or instead of) a
+  // resistance. Used to dispatch the reactive-port excitation path: a purely resistive
+  // port (L == C == 0) always takes the legacy code path so its results are unchanged.
+  constexpr bool HasReactance() const { return L != 0.0 || C != 0.0; }
+
+  // Reference resistance used to normalize the incident-field amplitude of an excited
+  // port. For a resistive port this is R (so the reference impedance is the port's own
+  // resistance and legacy behavior is preserved exactly). For a purely reactive port
+  // (R == 0) there is no real resistance to reference the incident power to, so we fall
+  // back to the unit reference impedance |Z_R| = 1 in internal units (= Z_freespace).
+  // The generalized (conjugate-match) scattering parameter is subsequently renormalized
+  // from this real reference to the true complex reference impedance Z_ref(ω).
+  double GetExcitationRefResistance() const { return (std::abs(R) > 0.0) ? R : 1.0; }
+
   enum class Branch
   {
     TOTAL,

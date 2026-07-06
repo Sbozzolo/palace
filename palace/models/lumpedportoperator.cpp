@@ -35,17 +35,25 @@ LumpedPortData::LumpedPortData(const config::LumpedPortData &data,
 
   if (HasExcitation())
   {
+    // An excited port must present a well-defined, nonzero reference impedance so that a
+    // finite incident wave can be defined. Historically only a purely resistive port
+    // (R > 0, no reactance) was allowed. We now also permit a reactive reference impedance
+    // Z_ref(ω) = R + iωL + 1/(iωC), following the HFSS convention in which the port acts as
+    // a measurement probe with a user-defined complex reference impedance. The only
+    // requirements are that the port defines some circuit properties (checked above, so
+    // |Z_ref| ≠ 0 at ω > 0) and that the resistance is non-negative (always true for a
+    // passive parallel R/L/C, since Re(Y) = 1/R ≥ 0 ⇒ Re(Z_ref) ≥ 0). A purely reactive
+    // drive (R = 0) is allowed: the generalized (conjugate-match) scattering parameter is a
+    // ratio and stays finite as Re(Z_ref) → 0.
     if (has_circ)
     {
-      MFEM_VERIFY(data.R > 0.0, "Excited lumped port must have nonzero resistance!");
-      MFEM_VERIFY(data.C == 0.0 && data.L == 0.0,
-                  "Lumped port excitations do not support nonzero reactance!");
+      MFEM_VERIFY(data.R >= 0.0,
+                  "Excited lumped port must have non-negative resistance!");
     }
     else
     {
-      MFEM_VERIFY(data.Rs > 0.0, "Excited lumped port must have nonzero resistance!");
-      MFEM_VERIFY(data.Cs == 0.0 && data.Ls == 0.0,
-                  "Lumped port excitations do not support nonzero reactance!");
+      MFEM_VERIFY(data.Rs >= 0.0,
+                  "Excited lumped port must have non-negative resistance!");
     }
   }
 
@@ -182,7 +190,11 @@ void LumpedPortData::InitializeLinearForms(mfem::ParFiniteElementSpace &nd_fespa
     SumVectorCoefficient fb(mesh.SpaceDimension());
     for (const auto &elem : elems)
     {
-      const double Rs = R * GetToSquare(*elem);
+      // Reference to the same real resistance used to normalize the incident drive
+      // (R for a resistive port, unit reference for a purely reactive one), so that the
+      // raw projection is the Kurokawa b-amplitude referenced to a real R_ref. The
+      // renormalization to the true complex reference impedance is applied downstream.
+      const double Rs = GetExcitationRefResistance() * GetToSquare(*elem);
       const double Hinc = (std::abs(Rs) > 0.0)
                               ? 1.0 / std::sqrt(Rs * elem->GetGeometryWidth() *
                                                 elem->GetGeometryLength() * elems.size())
@@ -630,11 +642,15 @@ void LumpedPortOperator::AddExcitationBdrCoefficients(int excitation_idx,
     {
       continue;
     }
-    MFEM_VERIFY(std::abs(data.R) > 0.0,
-                "Unexpected zero resistance in excited lumped port!");
+    // Normalize the incident field to a real reference resistance. For a resistive port
+    // this is the port resistance R (legacy behavior, unchanged). For a purely reactive
+    // excited port (R == 0) the incident power cannot be referenced to the port's own
+    // impedance, so we use the unit reference |Z_R| = 1 in internal units; the true
+    // reactive reference impedance is applied later in the generalized-S renormalization.
+    const double R_ref = data.GetExcitationRefResistance();
     for (const auto &elem : data.elems)
     {
-      const double Rs = data.R * data.GetToSquare(*elem);
+      const double Rs = R_ref * data.GetToSquare(*elem);
       const double Hinc = 1.0 / std::sqrt(Rs * elem->GetGeometryWidth() *
                                           elem->GetGeometryLength() * data.elems.size());
       fb.AddCoefficient(elem->GetModeCoefficient(2.0 * Hinc));
