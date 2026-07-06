@@ -20,7 +20,6 @@ target_sources(${LIB_TARGET_NAME}
   ${CMAKE_CURRENT_SOURCE_DIR}/postoperator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/postoperatorcsv.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/portexcitations.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/portrenormalization.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/romoperator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/strattonchu.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/spaceoperator.cpp
