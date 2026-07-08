@@ -312,10 +312,12 @@ ErrorIndicator DrivenSolver::SweepAdaptive(SpaceOperator &space_op) const
   RomOperator prom_op(iodata, space_op, max_size_per_excitation);
   space_op.GetWavePortOp().SetSuppressOutput(true);
 
-  // Add ports to PROM if we do synthesis, followed by the quasistatic anchor solves for
-  // any ports opted in via "SynthesisAnchor". The default screening frequency ν is a
-  // quarter of the lowest sweep sample, well below the band so the anchors capture the
-  // inductive-limit response.
+  // Add ports to PROM if we do synthesis, followed by the optional enrichment solves:
+  // quasistatic anchor solves for any ports opted in via "SynthesisAnchor" (default
+  // screening frequency ν is a quarter of the lowest sweep sample, well below the band so
+  // the anchors capture the inductive-limit response), electrostatic solutions per
+  // Terminal, and eigenmodes near the Solver/Eigenmode target. All are added before the
+  // offline sampling loop so the RHS1r projection bookkeeping stays consistent.
   if (iodata.solver.driven.adaptive_circuit_synthesis)
   {
     prom_op.AddLumpedPortModesForSynthesis();
@@ -330,6 +332,14 @@ ErrorIndicator DrivenSolver::SweepAdaptive(SpaceOperator &space_op) const
       }
       Mpi::Print(" Anchor screening frequency: ν = {:.3e} GHz\n", nu * unit_GHz);
       prom_op.AddLumpedPortAnchorModesForSynthesis(nu);
+    }
+    if (iodata.solver.driven.adaptive_circuit_synthesis_electrostatic)
+    {
+      prom_op.AddElectrostaticModesForSynthesis(iodata, iodata.problem.output);
+    }
+    if (iodata.solver.driven.adaptive_circuit_synthesis_eigenmodes)
+    {
+      prom_op.AddEigenmodesForSynthesis(iodata);
     }
   }
 

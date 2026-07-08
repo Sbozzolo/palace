@@ -1061,6 +1061,12 @@ DrivenSolverData::DrivenSolverData(const json &driven)
                    adaptive_circuit_synthesis_anchor_freq);
   MFEM_VERIFY(adaptive_circuit_synthesis_anchor_freq >= 0.0,
               "\"AdaptiveCircuitSynthesisAnchorFreq\" must be non-negative!");
+  adaptive_circuit_synthesis_eigenmodes =
+      driven.value("AdaptiveCircuitSynthesisEigenmodes",
+                   adaptive_circuit_synthesis_eigenmodes);
+  adaptive_circuit_synthesis_electrostatic =
+      driven.value("AdaptiveCircuitSynthesisElectrostatic",
+                   adaptive_circuit_synthesis_electrostatic);
 
   MFEM_VERIFY(!(restart != 1 && adaptive_tol > 0.0),
               "\"Restart\" is incompatible with adaptive frequency sweep!");
