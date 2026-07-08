@@ -515,6 +515,11 @@ RomOperator::RomOperator(const IoData &iodata, SpaceOperator &space_op,
     // (one full-FE-space vector per excluded port would otherwise be reserved).
     max_prom_size += NumSynthesisPortModes();
 
+    // Each anchor-flagged port adds exactly one real basis vector (the anchor solve
+    // keeps only the real quasistatic response; see
+    // AddLumpedPortAnchorModesForSynthesis).
+    max_prom_size += NumSynthesisAnchorPorts();
+
     // Build inner-product weight matrix.
     weight_op_W = HybridBulkBoundaryOperator{
         space_op, iodata.solver.driven.adaptive_circuit_synthesis_domain_orthog};
@@ -621,6 +626,19 @@ std::size_t RomOperator::NumSynthesisPortModes() const
   return n;
 }
 
+std::size_t RomOperator::NumSynthesisAnchorPorts() const
+{
+  std::size_t n = 0;
+  for (const auto &[port_idx, port_data] : space_op.GetLumpedPortOp())
+  {
+    if (port_data.synthesis_anchor)
+    {
+      n++;
+    }
+  }
+  return n;
+}
+
 void RomOperator::AddLumpedPortModesForSynthesis()
 {
   // Add modes for lumped port to use them a circuit matrices.
@@ -671,6 +689,54 @@ void RomOperator::AddLumpedPortModesForSynthesis()
   MFEM_VERIFY(orth_R.isDiagonal(diag_tol),
               "Lumped port fields on the mesh should have exactly zero overlap. This may "
               "be non-zero if attributes share edges.");
+}
+
+void RomOperator::AddLumpedPortAnchorModesForSynthesis(double nu)
+{
+  MFEM_VERIFY(nu > 0.0, "Anchor solves require a positive screening frequency!");
+  if (NumSynthesisAnchorPorts() == 0)
+  {
+    return;
+  }
+
+  // Assemble the screened quasistatic system A = K + ν²M once for all anchor solves. The
+  // positive mass coefficient makes the (real part of the) system positive definite —
+  // unlike the driven system at real frequency ω, which is indefinite (K − ω²M) and can
+  // resonate with band or near-degenerate modes. The same positive coefficient also gives
+  // a genuinely positive-definite preconditioner without the sign-shift heuristic used for
+  // the driven case.
+  Mpi::Print("\nComputing quasistatic anchor solves for {:d} lumped ports (ν² screening)\n",
+             NumSynthesisAnchorPorts());
+  auto A = space_op.GetSystemMatrix(std::complex<double>(1.0, 0.0),
+                                    std::complex<double>(0.0, 0.0),
+                                    std::complex<double>(nu * nu, 0.0), K.get(), C.get(),
+                                    M.get());
+  auto P = space_op.GetPreconditionerMatrix<ComplexOperator>(1.0 + 0.0i, 0.0 + 0.0i,
+                                                             nu * nu + 0.0i, 0.0);
+  // Safe to repurpose the shared solver: every SolveHDM call resets the operators.
+  ksp->SetOperators(*A, *P);
+
+  ComplexVector rhs, u;
+  rhs.SetSize(space_op.GetNDSpace().GetTrueVSize());
+  rhs.UseDevice(true);
+  u.SetSize(space_op.GetNDSpace().GetTrueVSize());
+  u.UseDevice(true);
+  for (const auto &[port_idx, port_data] : space_op.GetLumpedPortOp())
+  {
+    if (!port_data.synthesis_anchor)
+    {
+      continue;
+    }
+    if (!space_op.GetLumpedPortExcitationVector(port_idx, rhs))
+    {
+      continue;
+    }
+    ksp->Mult(rhs, u);
+    // Keep only the real part: the anchor is the quasistatic (inductive-limit) response,
+    // a real field configuration.
+    u.Imag() = 0.0;
+    UpdatePROM(u, fmt::format("anchor_{:d}", port_idx));
+  }
 }
 
 void RomOperator::UpdatePROM(const ComplexVector &u, std::string_view node_label)

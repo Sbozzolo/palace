@@ -3,6 +3,7 @@
 
 #include "drivensolver.hpp"
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <iostream>
@@ -311,10 +312,25 @@ ErrorIndicator DrivenSolver::SweepAdaptive(SpaceOperator &space_op) const
   RomOperator prom_op(iodata, space_op, max_size_per_excitation);
   space_op.GetWavePortOp().SetSuppressOutput(true);
 
-  // Add ports to PROM if we do synthesis.
+  // Add ports to PROM if we do synthesis, followed by the quasistatic anchor solves for
+  // any ports opted in via "SynthesisAnchor". The default screening frequency ν is a
+  // quarter of the lowest sweep sample, well below the band so the anchors capture the
+  // inductive-limit response.
   if (iodata.solver.driven.adaptive_circuit_synthesis)
   {
     prom_op.AddLumpedPortModesForSynthesis();
+    const auto &lumped_port_op = space_op.GetLumpedPortOp();
+    if (std::any_of(lumped_port_op.begin(), lumped_port_op.end(),
+                    [](const auto &port) { return port.second.synthesis_anchor; }))
+    {
+      double nu = iodata.solver.driven.adaptive_circuit_synthesis_anchor_freq;
+      if (nu <= 0.0)
+      {
+        nu = 0.25 * omega_sample.front();  // sample_f is sorted ascending on input
+      }
+      Mpi::Print(" Anchor screening frequency: ν = {:.3e} GHz\n", nu * unit_GHz);
+      prom_op.AddLumpedPortAnchorModesForSynthesis(nu);
+    }
   }
 
   // Initialize the basis with samples from the top and bottom of the frequency
