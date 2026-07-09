@@ -37,13 +37,11 @@ LumpedPortData::LumpedPortData(const config::LumpedPortData &data,
   {
     if (has_circ)
     {
-      MFEM_VERIFY(data.R >= 0.0,
-                  "Excited lumped port must have non-negative resistance!");
+      MFEM_VERIFY(data.R >= 0.0, "Excited lumped port must have non-negative resistance!");
     }
     else
     {
-      MFEM_VERIFY(data.Rs >= 0.0,
-                  "Excited lumped port must have non-negative resistance!");
+      MFEM_VERIFY(data.Rs >= 0.0, "Excited lumped port must have non-negative resistance!");
     }
   }
 
@@ -185,10 +183,11 @@ void LumpedPortData::InitializeLinearForms(mfem::ParFiniteElementSpace &nd_fespa
     for (const auto &elem : elems)
     {
       // Reference the S-parameter projection to the same real resistance used to normalize
-      // the incident drive (R for a resistive port; the unit reference for a purely reactive
-      // R == 0 port, so this does not divide by zero). The reactance is already present in
-      // the system matrix, so the projected field is the physical response; a purely
-      // reactive port's own S is not a meaningful traveling-wave quantity regardless.
+      // the incident drive (R for a resistive port; the unit reference for a purely
+      // reactive R == 0 port, so this does not divide by zero). The reactance is already
+      // present in the system matrix, so the projected field is the physical response; a
+      // purely reactive port's own S is not a meaningful traveling-wave quantity
+      // regardless.
       const double Rs = GetExcitationRefResistance() * GetToSquare(*elem);
       const double Hinc = (std::abs(Rs) > 0.0)
                               ? 1.0 / std::sqrt(Rs * elem->GetGeometryWidth() *
