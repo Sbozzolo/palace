@@ -298,12 +298,12 @@ public:
   // Enrich the PROM basis with eigenmodes of the full K/C/M system near the given target
   // (labels "eigen_<k>"). A shift-and-invert eigensolve with the same operator dispatch as
   // the eigenmode solver driver (quadratic pencil when a damping matrix is present, linear
-  // otherwise; no frequency-nonlinear A2 terms — circuit synthesis forbids them). This
-  // guarantees the resonant subspace near the target is represented in the basis
-  // independent of how strongly each mode couples to the driven ports. Parameters come
-  // from config["Solver"]["Eigenmode"]. Returns the number of converged eigenmodes added.
-  // Same ordering contract as the anchor solves: call after
-  // AddLumpedPortModesForSynthesis and before the offline sampling loop.
+  // otherwise; no frequency-nonlinear A2 terms — circuit synthesis forbids them). The solve
+  // requests the configured number of modes near the target; it does not attempt or
+  // guarantee complete coverage of any frequency band. Parameters come from
+  // config["Solver"]["Eigenmode"]. Returns the number of converged eigenmodes added. Same
+  // ordering contract as the anchor solves: call after AddLumpedPortModesForSynthesis and
+  // before the offline sampling loop.
   int AddEigenmodesForSynthesis(const IoData &iodata);
 
   // Enrich the PROM basis with electrostatic (DC) solutions (labels
