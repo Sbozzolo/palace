@@ -2414,7 +2414,7 @@
         },
         "AdaptiveCircuitSynthesisAnchorFreq": {
           "type": "number",
-          "description": "Screening frequency ``\\nu``, GHz, for the quasistatic anchor solves performed during adaptive driven circuit synthesis (see [SynthesisAnchor](@ref config-boundaries-lumpedport) on `LumpedPort`). Each anchored port is solved as ``(K + \\nu^2 M)\\,x = b_p`` — an imaginary-frequency (screened electrostatic-like) system that is symmetric positive definite for any ``\\nu > 0``. Choose ``\\nu`` well below the sweep band so the anchor captures the quasistatic (inductive-limit) junction response. `0` (default) selects ``\\nu`` automatically as 1/4 of the lowest sweep sample frequency.",
+          "description": "Screening frequency ``\\nu``, GHz, for the quasistatic anchor solves performed during adaptive driven circuit synthesis (see [SynthesisAnchor](@ref config-boundaries-lumpedport) on `LumpedPort`). Each anchored port is solved as ``(K + \\nu^2 M)\\,x = b_p`` — an imaginary-frequency (screened electrostatic-like) system that is symmetric positive definite for any ``\\nu > 0``. Choose ``\\nu`` well below the sweep band so the anchor captures the quasistatic (inductive-limit) junction response. `0` (default) selects ``\\nu`` automatically as 1/10 of the lowest sweep sample frequency.",
           "minimum": 0.0,
           "default": 0.0,
           "x-palace-advanced": true

@@ -328,7 +328,7 @@ ErrorIndicator DrivenSolver::SweepAdaptive(SpaceOperator &space_op) const
       double nu = iodata.solver.driven.adaptive_circuit_synthesis_anchor_freq;
       if (nu <= 0.0)
       {
-        nu = 0.25 * omega_sample.front();  // sample_f is sorted ascending on input
+        nu = 0.1 * omega_sample.front();  // sample_f is sorted ascending on input
       }
       Mpi::Print(" Anchor screening frequency: ν = {:.3e} GHz\n", nu * unit_GHz);
       prom_op.AddLumpedPortAnchorModesForSynthesis(nu);

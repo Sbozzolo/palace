@@ -1055,8 +1055,8 @@ TEST_CASE_METHOD(palace::test::PerRankTempDir, "RomOperator-Synthesis-AnchorEnte
   auto dim_after_ports = prom_op.GetReducedDimension();
   CHECK(dim_after_ports == 1);  // One L-port → one port mode
 
-  // Anchor solve at nu = 1/4 of MinFreq (nondimensionalized already in iodata).
-  double nu = 0.25 * iodata.solver.driven.sample_f.front();
+  // Anchor solve at the default nu = 1/10 of MinFreq (nondimensionalized in iodata).
+  double nu = 0.1 * iodata.solver.driven.sample_f.front();
   prom_op.AddLumpedPortAnchorModesForSynthesis(nu);
 
   CHECK(prom_op.GetReducedDimension() == dim_after_ports + 1);  // Exactly 1 anchor vector
