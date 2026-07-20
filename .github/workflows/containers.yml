@@ -64,7 +64,10 @@ jobs:
   # release below, so this job is gated off for them to avoid double builds.
   build-containers:
     needs: filter
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    # TEMP(container-cuda test): also skip on workflow_dispatch so a dispatch run
+    # exercises ONLY build-containers-cuda. Revert to
+    # `if: ${{ !startsWith(github.ref, 'refs/tags/v') }}` before merge.
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -101,3 +104,23 @@ jobs:
       - uses: ./.github/actions/build-container
         with:
           target: ${{ matrix.target }}
+
+  # Release tags (vX.Y.Z): build a CUDA container. nvcc cross-compiles device
+  # code for the requested compute capability, so the build host needs no GPU of
+  # that capability — it runs on the gpu runner (A10G / sm_86) purely for its
+  # CUDA toolkit. cuda_80 (A100/sm_80) is built here; the image is labelled
+  # cuda_80 to distinguish it from CPU-only images.
+  # TEMP(container-cuda test): `|| workflow_dispatch` lets this be dispatched off
+  # a branch for validation. Build-only (metadata sets PUSH=false). Revert to
+  # `if: startsWith(github.ref, 'refs/tags/v')` before merge.
+  build-containers-cuda:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Fetch tags so the release channel can derive the version from the ref.
+          fetch-depth: 0
+      - uses: ./.github/actions/build-container
+        with:
+          cuda_arch: '80'

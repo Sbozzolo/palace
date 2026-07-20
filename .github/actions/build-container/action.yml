@@ -10,6 +10,15 @@ inputs:
       build-time binaries remain executable on the host.
     required: false
     default: ''
+  cuda_arch:
+    description: >-
+      CUDA compute capability to build Palace for (e.g. 80 for sm_80/A100).
+      Empty means a CPU-only build. Device code is cross-compiled by nvcc, so
+      the build host needs no GPU of this capability (and needs no GPU at all);
+      only a CUDA toolkit that supports the target. The resulting image is
+      labelled cuda_<arch> to distinguish it from CPU-only images.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -54,11 +63,19 @@ runs:
         # an env var (not interpolated into the script) to keep untrusted-input
         # injection off the shell command line.
         TARGET: ${{ inputs.target }}
+        # Requested CUDA compute capability; empty means a CPU-only build. Also
+        # bound to an env var rather than interpolated inline.
+        CUDA_ARCH: ${{ inputs.cuda_arch }}
       run: |
-        # Build for the requested target if given, else the runner's native
-        # microarchitecture. A target must be <= the host's native ISA (the
-        # workflow matrix guarantees this) so build-time binaries can run here.
-        ARCH_LABEL="${TARGET:-$(spack arch -t)}"
+        # Label the image by its distinguishing dimension:
+        #   - CUDA build       -> cuda_<arch>  (e.g. cuda_80), GPU-specific
+        #   - CPU target build -> <target>     (e.g. x86_64_v3), matrix-provided
+        #   - native CPU build -> spack arch -t (the runner's own microarch)
+        if [ -n "$CUDA_ARCH" ]; then
+          ARCH_LABEL="cuda_${CUDA_ARCH}"
+        else
+          ARCH_LABEL="${TARGET:-$(spack arch -t)}"
+        fi
 
         # Sanitize the branch into an ECR-tag/S3-prefix-safe slug: ECR tags allow
         # only [A-Za-z0-9_.-], and '/' is illegal, so collapse everything else
@@ -130,6 +147,31 @@ runs:
           spack -e . config get packages
         else
           echo "No target pin requested; building for native microarchitecture."
+        fi
+
+    - name: Enable CUDA
+      # Turn the CPU-only environment into a CUDA build for the requested compute
+      # capability. Skipped when cuda_arch is empty (the default CPU-only build).
+      # Bound to an env var (not interpolated into the script) to keep untrusted
+      # input off the command line.
+      #
+      # Applied via `require` on the palace root spec only: Palace's Spack package
+      # forwards +cuda/cuda_arch to its CUDA-enabled dependencies (mfem, hypre,
+      # petsc, slepc, ...), mirroring how the palace-ci action puts cuda_arch on
+      # the root spec. The cuda toolkit itself is a normal build dependency Spack
+      # installs in-container, so the build host needs no CUDA install and no GPU:
+      # nvcc cross-compiles device code for the target capability.
+      shell: bash
+      env:
+        CUDA_ARCH: ${{ inputs.cuda_arch }}
+      run: |
+        if [ -n "$CUDA_ARCH" ]; then
+          cd .github/actions/build-container/spack_env
+          spack -e . config add "packages:palace:require:+cuda cuda_arch=${CUDA_ARCH}"
+          echo "Enabled CUDA build for compute capability ${CUDA_ARCH}:"
+          spack -e . config get packages
+        else
+          echo "No CUDA arch requested; CPU-only build."
         fi
 
     - name: Generate Dockerfile
