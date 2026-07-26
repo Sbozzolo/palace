@@ -5,6 +5,7 @@
 #include <catch2/generators/catch_generators_all.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <cmath>
 #include <complex>
 
 #include "linalg/vector.hpp"
@@ -107,6 +108,56 @@ TEST_CASE("Vector Sum - Complex", "[vector][Serial][Parallel][GPU]")
 
   CHECK_THAT(sum.real(), WithinRel(expected_real));
   CHECK_THAT(sum.imag(), WithinRel(expected_imag));
+}
+
+TEST_CASE("ComplexVector reciprocal uses scaled arithmetic",
+          "[vector][Serial][Parallel][GPU]")
+{
+  ComplexVector x(4);
+  x.UseDevice(true);
+  auto *xr = x.Real().Write();
+  auto *xi = x.Imag().Write();
+  mfem::forall(x.Size(),
+               [=] MFEM_HOST_DEVICE(int i)
+               {
+                 if (i == 0)
+                 {
+                   xr[i] = 1.0e-308;
+                   xi[i] = 0.0;
+                 }
+                 else if (i == 1)
+                 {
+                   xr[i] = 1.0e308;
+                   xi[i] = 1.0e308;
+                 }
+                 else if (i == 2)
+                 {
+                   xr[i] = 3.0;
+                   xi[i] = 4.0;
+                 }
+                 else
+                 {
+                   xr[i] = -2.0;
+                   xi[i] = 0.0;
+                 }
+               });
+
+  x.Reciprocal();
+  const auto *yr = x.Real().HostRead();
+  const auto *yi = x.Imag().HostRead();
+  for (int i = 0; i < x.Size(); i++)
+  {
+    CHECK(std::isfinite(yr[i]));
+    CHECK(std::isfinite(yi[i]));
+  }
+  CHECK_THAT(yr[0], WithinRel(1.0e308, 1.0e-15));
+  CHECK(yi[0] == 0.0);
+  CHECK_THAT(yr[1], WithinRel(5.0e-309, 1.0e-14));
+  CHECK_THAT(yi[1], WithinRel(-5.0e-309, 1.0e-14));
+  CHECK_THAT(yr[2], WithinRel(3.0 / 25.0));
+  CHECK_THAT(yi[2], WithinRel(-4.0 / 25.0));
+  CHECK_THAT(yr[3], WithinRel(-0.5));
+  CHECK(yi[3] == 0.0);
 }
 
 TEST_CASE("ComplexVector Set", "[vector][Serial][Parallel][GPU]")

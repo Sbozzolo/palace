@@ -3,6 +3,7 @@
 
 #include "vector.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <random>
 #include <mfem/general/forall.hpp>
@@ -254,9 +255,20 @@ void ComplexVector::Reciprocal()
   mfem::forall_switch(use_dev, N,
                       [=] MFEM_HOST_DEVICE(int i)
                       {
-                        const auto s = 1.0 / (XR[i] * XR[i] + XI[i] * XI[i]);
-                        XR[i] *= s;
-                        XI[i] *= -s;
+                        // Scale before forming the squared magnitude to avoid spurious
+                        // overflow or underflow when the reciprocal is representable.
+                        // Deliberately leave zero and non-finite inputs to IEEE arithmetic;
+                        // callers own any semantic validation.
+                        const auto ar = XR[i];
+                        const auto ai = XI[i];
+                        const auto ar_abs = fabs(ar);
+                        const auto ai_abs = fabs(ai);
+                        const auto scale = ar_abs > ai_abs ? ar_abs : ai_abs;
+                        const auto sr = ar / scale;
+                        const auto si = ai / scale;
+                        const auto denom = sr * sr + si * si;
+                        XR[i] = (sr / denom) / scale;
+                        XI[i] = (-si / denom) / scale;
                       });
 }
 

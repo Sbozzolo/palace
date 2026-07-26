@@ -14,8 +14,12 @@ namespace palace
 //
 // Matrix-free diagonally-scaled Chebyshev smoothing. This is largely the same as
 // mfem::OperatorChebyshevSmoother allows a nonzero initial guess and uses alternative
-// methods to estimate the largest eigenvalue. We use a smoother based on Chebyshev
-// polynomials of the 4th-kind as proposed in recent work.
+// methods to estimate the largest eigenvalue. Real and exactly-real complex operators must
+// be Hermitian positive semidefinite with a strictly positive diagonal. General-complex
+// operators must be complex-symmetric (Aᵀ = A), because transpose application aliases
+// forward application, and use a non-Hermitian norm estimate with a finite, nonzero
+// diagonal. Every accepted diagonal entry must have a finite representable reciprocal. We
+// use a smoother based on Chebyshev polynomials of the 4th-kind as proposed in recent work.
 // Reference: Phillips and Fischer, Optimal Chebyshev smoothers and one-sided V-cycles,
 //            arXiv:2210.03179v1 (2022).
 //
@@ -78,7 +82,7 @@ public:
 
 //
 // Matrix-free diagonally-scaled Chebyshev smoothing using standard 1st-kind Chebyshev
-// polynomials.
+// polynomials. The same operator and diagonal contracts as ChebyshevSmoother apply.
 // Reference: Adams et al., Parallel multigrid smoothing: polynomial versus Gauss–Seidel,
 //            JCP (2003).
 //

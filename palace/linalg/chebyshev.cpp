@@ -4,6 +4,7 @@
 #include "chebyshev.hpp"
 
 #include <mfem/general/forall.hpp>
+#include "linalg/smoother_utils.hpp"
 
 namespace palace
 {
@@ -11,20 +12,41 @@ namespace palace
 namespace
 {
 
-double GetLambdaMax(MPI_Comm comm, const Operator &A, const Vector &dinv)
+double GetLambdaMax(MPI_Comm comm, const Operator &A, const Vector &dinv,
+                    bool use_hermitian)
 {
-  // Assumes A SPD (diag(A) > 0) to use Hermitian eigenvalue solver.
-  DiagonalOperator Dinv(dinv);
-  ProductOperator DinvA(Dinv, A);
-  return linalg::SpectralNorm(comm, DinvA, true);
+  MFEM_ASSERT(use_hermitian, "Real Chebyshev operators use the Hermitian estimator!");
+  // Chebyshev owns the Hermitian-PSD contract. With D = diag(A) > 0, D⁻¹A is
+  // similar to the Euclidean-Hermitian operator D⁻¹ᐟ²AD⁻¹ᐟ², so send the latter
+  // to the Hermitian eigensolver.
+  Vector dinv_sqrt(dinv);
+  linalg::Sqrt(dinv_sqrt);
+  DiagonalOperator DinvSqrt(dinv_sqrt);
+  ProductOperator ADinvSqrt(A, DinvSqrt);
+  ProductOperator S(DinvSqrt, ADinvSqrt);
+  return linalg::SpectralNorm(comm, S, true);
 }
 
-double GetLambdaMax(MPI_Comm comm, const ComplexOperator &A, const ComplexVector &dinv)
+double GetLambdaMax(MPI_Comm comm, const ComplexOperator &A, const ComplexVector &dinv,
+                    bool use_hermitian)
 {
-  // Assumes A SPD (diag(A) > 0) to use Hermitian eigenvalue solver.
+  if (use_hermitian)
+  {
+    // The collective IsReal() result dispatches the exactly-real representation; it is not
+    // proof of Hermiticity. Chebyshev's separate Hermitian-PSD contract justifies HEP here.
+    ComplexVector dinv_sqrt(dinv);
+    linalg::Sqrt(dinv_sqrt.Real());
+    ComplexDiagonalOperator DinvSqrt(dinv_sqrt);
+    ComplexProductOperator ADinvSqrt(A, DinvSqrt);
+    ComplexProductOperator S(DinvSqrt, ADinvSqrt);
+    return linalg::SpectralNorm(comm, S, true);
+  }
+
+  // General-complex smoothing is a non-Hermitian heuristic. Retain the SVD estimate of
+  // ||D⁻¹A||₂ rather than presenting D⁻¹A as a Hermitian eigenproblem.
   ComplexDiagonalOperator Dinv(dinv);
   ComplexProductOperator DinvA(Dinv, A);
-  return linalg::SpectralNorm(comm, DinvA, A.IsReal());
+  return linalg::SpectralNorm(comm, DinvA, false);
 }
 
 template <bool Transpose = false>
@@ -175,13 +197,21 @@ void ChebyshevSmoother<OperType>::SetOperator(const OperType &op)
   d.UseDevice(true);
   dinv.UseDevice(true);
   op.AssembleDiagonal(dinv);
+  const bool use_hermitian =
+      internal::IsSmootherOperatorReal(comm, op, "Chebyshev smoother");
+  internal::ValidateSmootherDiagonal(comm, dinv,
+                                     use_hermitian
+                                         ? internal::SmootherDiagonalPolicy::POSITIVE_REAL
+                                         : internal::SmootherDiagonalPolicy::FINITE_NONZERO,
+                                     "Chebyshev smoother");
   dinv.Reciprocal();
+  internal::ValidateSmootherReciprocal(comm, dinv, "Chebyshev smoother");
 
   // Set up Chebyshev coefficients using the computed maximum eigenvalue estimate. See
   // mfem::OperatorChebyshevSmoother or Adams et al. (2003).
-  lambda_max = sf_max * GetLambdaMax(comm, *A, dinv);
-  MFEM_VERIFY(lambda_max > 0.0,
-              "Encountered zero maximum eigenvalue in Chebyshev smoother!");
+  lambda_max = sf_max * GetLambdaMax(comm, *A, dinv, use_hermitian);
+  internal::ValidateSmootherPositiveFinite(
+      comm, lambda_max, "Chebyshev smoother maximum eigenvalue estimate");
 
   this->height = op.Height();
   this->width = op.Width();
@@ -238,7 +268,15 @@ void ChebyshevSmoother1stKind<OperType>::SetOperator(const OperType &op)
   d.UseDevice(true);
   dinv.UseDevice(true);
   op.AssembleDiagonal(dinv);
+  const bool use_hermitian =
+      internal::IsSmootherOperatorReal(comm, op, "First-kind Chebyshev smoother");
+  internal::ValidateSmootherDiagonal(comm, dinv,
+                                     use_hermitian
+                                         ? internal::SmootherDiagonalPolicy::POSITIVE_REAL
+                                         : internal::SmootherDiagonalPolicy::FINITE_NONZERO,
+                                     "First-kind Chebyshev smoother");
   dinv.Reciprocal();
+  internal::ValidateSmootherReciprocal(comm, dinv, "First-kind Chebyshev smoother");
 
   // Set up Chebyshev coefficients using the computed maximum eigenvalue estimate. The
   // optimized estimate of lambda_min comes from (2.24) of Phillips and Fischer (2022).
@@ -246,9 +284,9 @@ void ChebyshevSmoother1stKind<OperType>::SetOperator(const OperType &op)
   {
     sf_min = 1.69 / (std::pow(order, 1.68) + 2.11 * order + 1.98);
   }
-  const double lambda_max = sf_max * GetLambdaMax(comm, *A, dinv);
-  MFEM_VERIFY(lambda_max > 0.0,
-              "Encountered zero maximum eigenvalue in Chebyshev smoother!");
+  const double lambda_max = sf_max * GetLambdaMax(comm, *A, dinv, use_hermitian);
+  internal::ValidateSmootherPositiveFinite(
+      comm, lambda_max, "First-kind Chebyshev smoother maximum eigenvalue estimate");
   const double lambda_min = sf_min * lambda_max;
   theta = 0.5 * (lambda_max + lambda_min);
   delta = 0.5 * (lambda_max - lambda_min);

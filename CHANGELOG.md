@@ -46,6 +46,9 @@ See the [developer notes on schema versioning](https://awslabs.github.io/palace/
 
 #### Bug Fixes
 
+  - Fixed Chebyshev and automatically damped Jacobi spectral estimates to use a Hermitian
+    diagonal similarity scaling, and made complex diagonal reciprocals robust across the
+    representable floating-point range.
   - Fixed saving output to non-shared filesystems [PR 813](https://github.com/awslabs/palace/pull/813).
   - Fixed S-parameter post-processing for mixed Floquet + lumped/wave port configurations.
     Previously, `MeasureSParameter()` skipped processing when Floquet ports coexisted with
