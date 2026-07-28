@@ -13,7 +13,25 @@ Two entry points, one decision function:
 * ``--reverify EXPECTED``: recompute the decision immediately before the writes
   (TOCTOU guard) and fail unless it still authorizes the same selector.
 
-The GitHub API is reached through a small seam (:class:`GitHubApi`) so the
+A build is authorized to publish only when, checked against the live GitHub
+API (never the build's own claims):
+
+* it did NOT come from a fork (head repo == base repo); and
+* the triggering event is one of:
+  - push to `main`, and `main` still points at the built commit
+    -> publishes the `main` channel;
+  - push of a `vX.Y.Z` release tag that still points at the built commit
+    -> publishes the `X.Y.Z` channel;
+  - manual `workflow_dispatch` on a branch that still points at the built
+    commit -> publishes `dev-<branch>`;
+  - a same-repo `pull_request` whose head (matched by sha AND ref) is an OPEN
+    PR currently carrying the `push-containers` label -> publishes
+    `dev-<branch>`.
+
+For the two `dev-<branch>` paths the branch name must match `DEV_BRANCH_RE`.
+Anything else is rejected (fail closed), with a reason.
+
+The GitHub API is reached through a small seam (the `GitHubApi` class) so the
 decision logic is unit-tested with a fake client and no network.
 """
 
