@@ -108,6 +108,28 @@ def plan(
     return items
 
 
+def schema_s3_uri(selector: str, schema_bucket: str) -> str:
+    """S3 destination for this build's config schema.
+
+    The schema is arch-independent, so a single object per selector suffices; it
+    mirrors the SIF prefix layout (``dev-<branch>`` -> ``dev/<branch>/``).
+    """
+    return f"s3://{schema_bucket}/{s3_prefix_for(selector)}/schema.json"
+
+
+def find_schema(artifacts_dir: Path) -> Path | None:
+    """Locate the bundled config schema among the downloaded artifacts.
+
+    ``build-container`` uploads ``config-schema.json`` once per build leg as
+    ``<image>-schema/config-schema.json``. The legs are byte-identical (the
+    schema does not vary by architecture), so any one is authoritative — we take
+    the first. Returns ``None`` when no schema artifact is present (e.g. a build
+    predating schema bundling), so the caller can skip rather than fail.
+    """
+    matches = sorted(artifacts_dir.glob("*-schema/config-schema.json"))
+    return matches[0] if matches else None
+
+
 def _run(cmd: list[str]) -> None:
     print("+ " + " ".join(cmd))
     subprocess.run(cmd, check=True)
@@ -128,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     region = os.environ["AWS_REGION"]
     ecr_repo = os.environ["ECR_REPOSITORY"]
     s3_bucket = os.environ["S3_CONTAINERS_BUCKET"]
+    schema_bucket = os.environ["S3_SCHEMAS_BUCKET"]
 
     account_id = subprocess.run(
         ["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"],
@@ -167,6 +190,19 @@ def main(argv: list[str] | None = None) -> int:
         _run(["aws", "s3", "cp", "--region", region, str(item.sif), item.s3_uri])
 
     print(f"Published {len(items)} image(s) for selector '{args.selector}'.")
+
+    # Publish the config schema alongside the images so downstream tools (e.g.
+    # paladin) can fetch the exact contract this build was compiled from. One
+    # arch-independent object per selector; skipped if the build didn't bundle
+    # a schema artifact.
+    schema = find_schema(Path(args.artifacts_dir))
+    if schema is None:
+        print("No config-schema.json artifact found; skipping schema publish.")
+    else:
+        schema_uri = schema_s3_uri(args.selector, schema_bucket)
+        print(f"Publishing schema {schema} -> {schema_uri}")
+        _run(["aws", "s3", "cp", "--region", region, str(schema), schema_uri])
+
     return 0
 
 
