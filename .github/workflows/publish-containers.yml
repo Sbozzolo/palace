@@ -50,11 +50,11 @@ jobs:
 
       # Decide whether this build may publish and to which selector, from
       # trusted event facts + live GitHub API lookups (never the build's
-      # artifacts). Logic and its unit tests live in .github/publish/.
+      # artifacts). Logic and its unit tests live in .github/publish_containers/.
       - name: Authorize publication and derive selector
         id: authz
         shell: bash
-        run: python3 .github/publish/authorize.py
+        run: python3 .github/publish_containers/authorize.py
 
   publish:
     needs: authorize
@@ -133,10 +133,10 @@ jobs:
       - name: Re-verify authorization before publishing
         if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
-        run: python3 .github/publish/authorize.py --reverify "${{ needs.authorize.outputs.selector }}"
+        run: python3 .github/publish_containers/authorize.py --reverify "${{ needs.authorize.outputs.selector }}"
 
       # Publish each downloaded build leg: OCI tar -> ECR (skopeo), SIF -> S3.
       - name: Publish OCI images to ECR and SIFs to S3
         if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
-        run: python3 .github/publish/publish.py --selector "${{ needs.authorize.outputs.selector }}"
+        run: python3 .github/publish_containers/publish.py --selector "${{ needs.authorize.outputs.selector }}"
