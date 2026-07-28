@@ -26,7 +26,6 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Protocol
 
 PUSH_CONTAINERS_LABEL = "push-containers"
 RELEASE_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+\Z")  # \Z, not $: see DEV_BRANCH_RE
@@ -62,18 +61,6 @@ class Decision:
     reason: str
 
 
-class GitHubApiPort(Protocol):
-    """The exact GitHub lookups :func:`decide` depends on.
-
-    Both the live :class:`GitHubApi` and the tests' fake satisfy this, so the
-    decision logic is unit-tested with no network.
-    """
-
-    def ref_sha(self, kind: str, name: str) -> str | None: ...
-    def pr_for_head(self, sha: str, ref: str) -> tuple[int, str, str] | None: ...
-    def pr_has_label(self, number: int, label: str) -> bool: ...
-
-
 def _reject(reason: str) -> Decision:
     return Decision(False, "", reason)
 
@@ -82,7 +69,7 @@ def _unsupported_branch_reason(branch: str) -> str:
     return (
         f"branch '{branch}' is not supported for dev publishing yet: the name "
         f"must look like 'prefix/name' (a hyphen-free prefix, one '/', then a "
-        f"name of [A-Za-z0-9_.-] starting alphanumeric), e.g. 'team/my-feature'. "
+        f"name of [A-Za-z0-9_.-] starting alphanumeric), e.g. 'user/my-feature'. "
         f"This restriction keeps the dev-<branch> selector collision-free. "
         f"main and release-tag publishing are unaffected."
     )
@@ -168,11 +155,13 @@ class GitHubApi:
         return any(isinstance(lbl, dict) and lbl.get("name") == label for lbl in labels)
 
 
-def decide(facts: Facts, api: GitHubApiPort) -> Decision:
+def decide(facts, api) -> Decision:
     """Decide whether ``facts`` authorizes a publish, and to which selector.
 
-    Every branch re-derives from trusted facts / live API state, so calling
-    ``decide`` again just before the writes is a valid TOCTOU re-check.
+    ``api`` is anything providing ref_sha(kind, name), pr_for_head(sha, ref),
+    and pr_has_label(number, label) — the live GitHubApi in production, a fake
+    in tests. Every branch re-derives from trusted facts / live API state, so
+    calling ``decide`` again just before the writes is a valid TOCTOU re-check.
     """
     # Forks never publish, regardless of event. A maintainer approving a fork
     # build authorizes EXECUTING its code on a runner, never publishing.
