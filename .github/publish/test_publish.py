@@ -130,24 +130,38 @@ class PlanGuards(unittest.TestCase):
                 plan(root, "main", REGISTRY, ECR_REPO, BUCKET)
             self.assertIn("duplicate arch label", str(cm.exception))
 
-    def test_expected_legs_mismatch_is_rejected(self):
-        # A release expects 6 legs; a partial download (5) must fail, not publish
-        # an incomplete release as success.
+    RELEASE_LABELS = {"x86_64_v3", "x86_64_v4", "sapphirerapids", "aarch64", "neoverse_v1", "neoverse_v2"}
+    NATIVE_LABELS = {"sapphirerapids", "neoverse_v1"}
+
+    def test_expected_labels_missing_target_is_rejected(self):
+        # A release expects the full 6-label set; a partial download (missing
+        # neoverse_v2) must fail, not publish an incomplete release as success.
         names = [f"palace-{t}-abc1234" for t in
-                 ("x86_64_v3", "x86_64_v4", "sapphirerapids", "aarch64", "neoverse_v1")]  # 5, missing v2
+                 ("x86_64_v3", "x86_64_v4", "sapphirerapids", "aarch64", "neoverse_v1")]  # missing v2
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             make_artifacts(root, names)
             with self.assertRaises(ValueError) as cm:
-                plan(root, "0.18.0", REGISTRY, ECR_REPO, BUCKET, expected_legs=6)
-            self.assertIn("expected 6", str(cm.exception))
+                plan(root, "0.18.0", REGISTRY, ECR_REPO, BUCKET, expected_labels=self.RELEASE_LABELS)
+            self.assertIn("neoverse_v2", str(cm.exception))  # reported as missing
 
-    def test_expected_legs_match_passes(self):
+    def test_expected_labels_extra_label_is_rejected(self):
+        # An unexpected extra label (e.g. a stray/mislabelled leg) also fails.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            make_artifacts(root, ["palace-sapphirerapids-abc1234"])
-            items = plan(root, "main", REGISTRY, ECR_REPO, BUCKET, expected_legs=1)
-        self.assertEqual(len(items), 1)
+            make_artifacts(root, ["palace-sapphirerapids-abc1234", "palace-neoverse_v1-abc1234",
+                                   "palace-x86_64_v3-abc1234"])  # extra for a non-release
+            with self.assertRaises(ValueError) as cm:
+                plan(root, "main", REGISTRY, ECR_REPO, BUCKET, expected_labels=self.NATIVE_LABELS)
+            self.assertIn("x86_64_v3", str(cm.exception))  # reported as extra
+
+    def test_expected_labels_exact_native_set_passes(self):
+        # main/dev builds produce the two native legs; the exact set passes.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_artifacts(root, ["palace-sapphirerapids-abc1234", "palace-neoverse_v1-deadbee"])
+            items = plan(root, "main", REGISTRY, ECR_REPO, BUCKET, expected_labels=self.NATIVE_LABELS)
+        self.assertEqual(len(items), 2)
 
 
 if __name__ == "__main__":

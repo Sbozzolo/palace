@@ -494,23 +494,28 @@ compare with the one for `builtin.palace@develop`.
 
 ## Publishing containers
 
-Palace containers are built by the `Containers` workflow and published by a
-separate, trusted `Publish Containers` workflow. The build itself holds no
-cloud credentials and makes no publish decision; it only produces artifacts.
-After a build completes, `Publish Containers` (which always runs from `main`)
-independently decides — from the triggering event, verified against the GitHub
-API — whether and where to publish, and only then obtains short-lived
-credentials. This means the publish decision cannot be altered by the code under
-test.
+Palace containers are built by the `Containers` workflow and published to ECR
+and S3 by a separate, trusted `Publish Containers` workflow. The build holds no
+AWS credentials and makes no ECR/S3 publish decision; it only produces
+artifacts. After a build completes, `Publish Containers` (which always runs from
+`main`) independently decides — from the triggering event, verified against the
+GitHub API — whether and where to publish, and only then obtains short-lived AWS
+credentials via OIDC. This means the ECR/S3 publish decision cannot be altered
+by the code under test.
+
+(The build does still use a `packages`-scoped `GITHUB_TOKEN` to push Spack
+dependencies to the GHCR build cache; that cache is a separate, pre-existing
+path and is out of scope for the ECR/S3 publication trust boundary described
+here.)
 
 What gets published, by event:
 
-| Event | Published channel |
-|---|---|
-| Push to `main` | `main` (rolling) |
-| Push of a release tag `vX.Y.Z` | `X.Y.Z` (immutable release) |
-| Manual dispatch of `Containers` on a branch | `dev-<branch>` prototype |
-| Pull request labeled `push-containers` | `dev-<branch>` prototype |
+| Event                                       | Published channel           |
+|:------------------------------------------- |:--------------------------- |
+| Push to `main`                              | `main` (rolling)            |
+| Push of a release tag `vX.Y.Z`              | `X.Y.Z` (versioned release) |
+| Manual dispatch of `Containers` on a branch | `dev-<branch>` prototype    |
+| Pull request labeled `push-containers`      | `dev-<branch>` prototype    |
 
 ### Publishing a `dev-<branch>` prototype from a branch
 

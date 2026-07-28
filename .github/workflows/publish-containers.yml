@@ -98,17 +98,32 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download build artifacts
+        id: download
         shell: bash
         run: |
           set -euo pipefail
           # Fetch all artifacts from the exact triggering run. -R is explicit so
           # the target repo never depends on the checkout's working directory.
+          #
+          # A build run can legitimately produce ZERO artifacts: e.g. a docs-only
+          # push to main where the paths-filter skips the build. That run still
+          # succeeds and is authorized for `main`, but there is nothing to
+          # publish — so treat zero artifacts as a clean skip (has_artifacts=false
+          # gates the remaining steps off), NOT an error. `gh run download`
+          # errors when a run has no artifacts, so tolerate that here.
           rm -rf ./artifacts
-          gh run download "$RUN_ID" -R "$OWNER_REPO" --dir ./artifacts
-          echo "Downloaded artifacts:"
-          find ./artifacts -type f -printf '%p (%s bytes)\n'
+          gh run download "$RUN_ID" -R "$OWNER_REPO" --dir ./artifacts || true
+          if [ -n "$(find ./artifacts -type f 2>/dev/null)" ]; then
+            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+            echo "Downloaded artifacts:"
+            find ./artifacts -type f -printf '%p (%s bytes)\n'
+          else
+            echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
+            echo "Build run produced no artifacts (e.g. paths-filtered build); nothing to publish."
+          fi
 
       - name: Configure AWS credentials (OIDC)
+        if: steps.download.outputs.has_artifacts == 'true'
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.PALACE_CONTAINER_PUBLISH_ROLE_ARN }}
@@ -119,6 +134,7 @@ jobs:
       # decision and fail unless it still authorizes this exact selector, so a
       # stale ref/removed label aborts before any write.
       - name: Re-verify authorization before publishing
+        if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
         run: python3 .github/publish/authorize.py --reverify "${{ needs.authorize.outputs.selector }}"
 
@@ -126,18 +142,24 @@ jobs:
       # Plan (arch-label parse, tag/key mapping) and its tests live in
       # .github/publish/publish.py; this step is thin glue.
       - name: Publish OCI images to ECR and SIFs to S3
+        if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
         env:
           SELECTOR: ${{ needs.authorize.outputs.selector }}
         run: |
           set -euo pipefail
-          # A release (selector X.Y.Z) builds the 6-target matrix; main and
-          # dev-<branch> builds are a single native leg per build run. Requiring
-          # the exact count makes a partial download a hard failure rather than
-          # a silently incomplete publish.
+          # The build matrix determines which arch labels a run produces:
+          #   - release (selector X.Y.Z): the 6-target microarch matrix, one
+          #     artifact per target label;
+          #   - main / dev-<branch>: the two native builds, labelled by their
+          #     host's native microarch (x64 -> sapphirerapids, arm64 ->
+          #     neoverse_v1; see containers.yml).
+          # Requiring the EXACT label set (not just a count) makes a partial or
+          # mislabelled download a hard failure rather than a silently
+          # incomplete publish. These sets must track the containers.yml matrix.
           if printf '%s' "$SELECTOR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            EXPECTED_LEGS=6
+            EXPECTED_LABELS="x86_64_v3,x86_64_v4,sapphirerapids,aarch64,neoverse_v1,neoverse_v2"
           else
-            EXPECTED_LEGS=1
+            EXPECTED_LABELS="sapphirerapids,neoverse_v1"
           fi
-          python3 .github/publish/publish.py --selector "$SELECTOR" --expected-legs "$EXPECTED_LEGS"
+          python3 .github/publish/publish.py --selector "$SELECTOR" --expected-labels "$EXPECTED_LABELS"
