@@ -5,11 +5,8 @@
 # permissions to push to AWS through a least-privilege OIDC role.
 #
 # Two jobs: `authorize` decides whether this build may publish and derives the
-# selector (no credentials); `publish` runs only if authorized, keys its
-# concurrency on the AUTHORIZED selector, and holds the OIDC role. Splitting
-# this way means an unauthorized run (e.g. a branch coincidentally named `main`)
-# never enters an authorized channel's concurrency group, so it cannot cancel a
-# legitimate in-flight publish.
+# selector while holding no credentials; `publish` runs only if authorized, keys
+# its concurrency on the authorized selector, and holds the OIDC role.
 
 name: Publish Containers
 
@@ -43,7 +40,7 @@ jobs:
       authorized: ${{ steps.authz.outputs.authorized }}
       selector: ${{ steps.authz.outputs.selector }}
     steps:
-      # Check out the TRUSTED publish code (authorize.py, etc.). In a
+      # Check out the trusted publish code (authorize.py, etc.). In a
       # workflow_run event the default ref is the commit the workflow was loaded
       # from — the default-branch (main) tip — NOT the build's head. We must
       # never check out the build's ref/SHA, or PR-controlled code would run.
@@ -63,7 +60,7 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.authorized == 'true'
     runs-on: ubuntu-latest
-    # Concurrency is keyed on the AUTHORIZED selector (only known now), so a
+    # Concurrency is keyed on the authorized selector (only known now), so a
     # newer publish for the same channel cancels an older in-flight one, while an
     # unauthorized run — which never reaches this job — can never enter the
     # group. Releases use distinct selectors, so they never cancel each other.
@@ -109,7 +106,7 @@ jobs:
           # push to main where the paths-filter skips the build. That run still
           # succeeds and is authorized for `main`, but there is nothing to
           # publish — so treat zero artifacts as a clean skip (has_artifacts=false
-          # gates the remaining steps off), NOT an error. `gh run download`
+          # gates the remaining steps off), not an error. `gh run download`
           # errors when a run has no artifacts, so tolerate that here.
           rm -rf ./artifacts
           gh run download "$RUN_ID" -R "$OWNER_REPO" --dir ./artifacts || true
@@ -132,34 +129,14 @@ jobs:
       # Authorize ran in a prior job; downloading artifacts and assuming the role
       # opened a window in which the moving ref/label could change. Recompute the
       # decision and fail unless it still authorizes this exact selector, so a
-      # stale ref/removed label aborts before any write.
+      # stale ref/removed label aborts before any write (TOCTOU).
       - name: Re-verify authorization before publishing
         if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
         run: python3 .github/publish/authorize.py --reverify "${{ needs.authorize.outputs.selector }}"
 
       # Publish each downloaded build leg: OCI tar -> ECR (skopeo), SIF -> S3.
-      # Plan (arch-label parse, tag/key mapping) and its tests live in
-      # .github/publish/publish.py; this step is thin glue.
       - name: Publish OCI images to ECR and SIFs to S3
         if: steps.download.outputs.has_artifacts == 'true'
         shell: bash
-        env:
-          SELECTOR: ${{ needs.authorize.outputs.selector }}
-        run: |
-          set -euo pipefail
-          # The build matrix determines which arch labels a run produces:
-          #   - release (selector X.Y.Z): the 6-target microarch matrix, one
-          #     artifact per target label;
-          #   - main / dev-<branch>: the two native builds, labelled by their
-          #     host's native microarch (x64 -> sapphirerapids, arm64 ->
-          #     neoverse_v1; see containers.yml).
-          # Requiring the EXACT label set (not just a count) makes a partial or
-          # mislabelled download a hard failure rather than a silently
-          # incomplete publish. These sets must track the containers.yml matrix.
-          if printf '%s' "$SELECTOR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            EXPECTED_LABELS="x86_64_v3,x86_64_v4,sapphirerapids,aarch64,neoverse_v1,neoverse_v2"
-          else
-            EXPECTED_LABELS="sapphirerapids,neoverse_v1"
-          fi
-          python3 .github/publish/publish.py --selector "$SELECTOR" --expected-labels "$EXPECTED_LABELS"
+        run: python3 .github/publish/publish.py --selector "${{ needs.authorize.outputs.selector }}"

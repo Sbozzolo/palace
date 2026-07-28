@@ -74,18 +74,16 @@ def plan(
     registry: str,
     ecr_repo: str,
     s3_bucket: str,
-    expected_labels: set[str] | None = None,
 ) -> list[PublishItem]:
     """Build the publish plan from the downloaded artifacts. Pure; no I/O beyond
     reading the artifact directory.
 
     Every leg must be COMPLETE (both the OCI tar and the SIF present) and its
-    arch label unique, and — when ``expected_labels`` is given — the set of arch
-    labels found must match it EXACTLY. Validating the label set (not just a
-    count) means a partial download, a missing/extra target, or a wrong-named
-    leg is a hard error, rather than a silently incomplete publish reported as
-    success. The artifact names carry the requested target, so the expected set
-    is deterministic from the build matrix regardless of what Spack concretizes.
+    arch label unique, so an incomplete or mislabelled leg is a hard error
+    rather than a silently partial publish. Completeness of the *set* of legs is
+    guaranteed upstream: this workflow only runs when the whole `Containers`
+    matrix succeeded (workflow_run.conclusion == 'success'), and the build's
+    artifact uploads are unconditional — so a successful run has every leg.
     """
     items: list[PublishItem] = []
     seen_labels: set[str] = set()
@@ -102,13 +100,6 @@ def plan(
         s3_uri = f"s3://{s3_bucket}/{s3_prefix_for(selector)}/{arch_label}.sif"
         items.append(PublishItem(image_name, arch_label, oci_tar, sif, ecr_tag, s3_uri))
 
-    if expected_labels is not None and seen_labels != expected_labels:
-        missing = sorted(expected_labels - seen_labels)
-        extra = sorted(seen_labels - expected_labels)
-        raise ValueError(
-            f"artifact arch labels for selector '{selector}' do not match the "
-            f"expected set; missing={missing} extra={extra}"
-        )
     return items
 
 
@@ -121,18 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selector", required=True)
     parser.add_argument("--artifacts-dir", default="./artifacts")
-    parser.add_argument(
-        "--expected-labels",
-        default=None,
-        help="Comma-separated arch labels that MUST be present exactly (no more, "
-        "no fewer). Fails a partial/incomplete publish. Omit to skip the check.",
-    )
     args = parser.parse_args(argv)
-    expected_labels = (
-        {s for s in args.expected_labels.split(",") if s}
-        if args.expected_labels is not None
-        else None
-    )
 
     region = os.environ["AWS_REGION"]
     ecr_repo = os.environ["ECR_REPOSITORY"]
@@ -146,10 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     registry = f"{account_id}.dkr.ecr.{region}.amazonaws.com"
 
     try:
-        items = plan(
-            Path(args.artifacts_dir), args.selector, registry, ecr_repo, s3_bucket,
-            expected_labels=expected_labels,
-        )
+        items = plan(Path(args.artifacts_dir), args.selector, registry, ecr_repo, s3_bucket)
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
