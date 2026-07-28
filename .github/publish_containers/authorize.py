@@ -31,18 +31,15 @@ from typing import Protocol
 PUSH_CONTAINERS_LABEL = "push-containers"
 RELEASE_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+\Z")  # \Z, not $: see DEV_BRANCH_RE
 
-# Dev-channel (dispatch / labeled-PR) branch names must match this shape:
-# a hyphen-free, slash-free prefix, exactly one "/", then a segment with no
-# further "/". This is the set on which slugify() (which maps every
-# non-[A-Za-z0-9_.-] char to "-") is INJECTIVE: the single "/" becomes the only
-# possible source of the first "-" in the slug, so no two accepted branches can
-# collapse to the same dev-<slug> selector (e.g. "feature/a-b" is accepted but
-# "feature-a/b" is not, so the pair that used to collide no longer can).
-# Other branch shapes are simply unsupported for publishing for now.
-# \Z (not $) anchors the true end of string: $ also matches just before a
-# trailing newline, so "a/b\n" would match and slug-collide with "a/b-". Git
-# refnames can't contain newlines (so the trusted API seam never surfaces one),
-# but \Z removes the footgun regardless.
+# Dev-channel (dispatch / labeled-PR) branch names must match this shape: a
+# hyphen-free, slash-free prefix, exactly one "/", then a segment with no
+# further "/" (e.g., `gbozzola/test-containers`). The reason for this is that
+# ECR has restrictions on what characters are allowed and we sanitize them in
+# slugify in such a way that could lead to collisions. We could remove this
+# restriction by using hashes adding much more infrastructure, but, honestly,
+# YAGNI.
+#
+# \Z (not $) so a trailing newline can't sneak past the anchor.
 DEV_BRANCH_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
