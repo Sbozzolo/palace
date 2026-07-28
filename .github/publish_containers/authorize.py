@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Authorization decision for the trusted container publish workflow.
 
 The publish workflow runs from the default branch (via ``workflow_run``), so
@@ -9,15 +12,14 @@ build passes no authorization data of its own.
 
 Two entry points, one decision function:
 
-* default: emit ``authorized=`` / ``selector=`` to ``$GITHUB_OUTPUT``.
-* ``--reverify EXPECTED``: recompute the decision immediately before the writes
+- default: emit ``authorized=`` / ``selector=`` to ``$GITHUB_OUTPUT``.
+- ``--reverify EXPECTED``: recompute the decision immediately before the writes
   (TOCTOU guard) and fail unless it still authorizes the same selector.
 
 A build is authorized to publish only when, checked against the live GitHub
-API (never the build's own claims):
-
-* it did NOT come from a fork (head repo == base repo); and
-* the triggering event is one of:
+API:
+- it did NOT come from a fork (head repo == base repo); and
+- the triggering event is one of:
   - push to `main`, and `main` still points at the built commit
     -> publishes the `main` channel;
   - push of a `vX.Y.Z` release tag that still points at the built commit
@@ -29,7 +31,6 @@ API (never the build's own claims):
     `dev-<branch>`.
 
 For the two `dev-<branch>` paths the branch name must match `DEV_BRANCH_RE`.
-Anything else is rejected (fail closed), with a reason.
 
 The GitHub API is reached through a small seam (the `GitHubApi` class) so the
 decision logic is unit-tested with a fake client and no network.
@@ -143,12 +144,7 @@ class GitHubApi:
         """(PR number, head repo full_name, state) for the PR whose head is
         ``sha`` AND whose head branch is ``ref``.
 
-        ``/commits/{sha}/pulls`` returns PRs that merely *contain* the commit
-        (filtered out by matching ``head.sha``), and multiple PRs can share a
-        head commit (e.g. two branches at the same sha) — so we ALSO match
-        ``head.ref`` to pin the PR for the branch that actually built, not some
-        other PR that happens to sit on the same commit. ``state`` is "open" or
-        "closed".
+        ``state`` is "open" or "closed".
         """
         pulls = self._get(f"repos/{self.repo}/commits/{sha}/pulls")
         if not isinstance(pulls, list):
@@ -157,6 +153,12 @@ class GitHubApi:
             if not isinstance(pr, dict):
                 continue
             head = pr.get("head") or {}
+            # ``/commits/{sha}/pulls`` returns PRs that merely *contain* the
+            # commit (filtered out by matching ``head.sha``), and multiple PRs
+            # can share a head commit (e.g. two branches at the same sha), so
+            # we ALSO match ``head.ref`` to pin the PR for the branch that
+            # actually built, not some other PR that happens to sit on the same
+            # commit.
             if head.get("sha") == sha and head.get("ref") == ref:
                 repo = (head.get("repo") or {}).get("full_name") or ""
                 state = pr.get("state") or ""

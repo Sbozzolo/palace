@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Publish a build run's container artifacts to ECR (OCI) and S3 (SIF).
 
 Runs only after :mod:`authorize` has authorized the publish and produced the
 selector. Splits cleanly into:
 
-* :func:`plan` — pure logic: map each downloaded artifact leg to its ECR tag
+- :func:`plan` — pure logic: map each downloaded artifact leg to its ECR tag
   and S3 URI. Unit-tested, no I/O.
-* :func:`main` — thin glue: ECR login, then run each planned copy via skopeo /
+- :func:`main` — thin glue: ECR login, then run each planned copy via skopeo /
   aws with explicit argument lists (no shell, so no quoting pitfalls).
 
 A native build produces one leg per arch; a release build one leg per
@@ -43,11 +46,12 @@ def arch_label_from_image(image_name: str) -> str:
     """``palace-<arch_label>-<shorthash>`` -> ``<arch_label>``.
 
     Arch labels are ``[a-z0-9_]`` (no hyphens) and the short hash is hex, so the
-    shape is unambiguous. We MATCH that exact shape rather than split on the last
-    hyphen: a loose split would mis-read e.g. ``palace-foo-latest`` as label
-    ``foo`` (hash ``latest``) or absorb a hyphen into the label, and two names
-    collapsing to one label would then overwrite each other's tag/key.
+    shape is unambiguous.
     """
+    # We match that exact shape rather than split on the last hyphen: a loose
+    # split would mis-read e.g. ``palace-foo-latest`` as label ``foo`` (hash
+    # ``latest``) or absorb a hyphen into the label, and two names collapsing to
+    # one label would then overwrite each other's tag/key.
     m = IMAGE_NAME_RE.match(image_name)
     if not m:
         raise ValueError(
@@ -78,12 +82,12 @@ def plan(
     """Build the publish plan from the downloaded artifacts. Pure; no I/O beyond
     reading the artifact directory.
 
-    Every leg must be COMPLETE (both the OCI tar and the SIF present) and its
+    Every leg must be complete (both the OCI tar and the SIF present) and its
     arch label unique, so an incomplete or mislabelled leg is a hard error
-    rather than a silently partial publish. Completeness of the *set* of legs is
+    rather than a silently partial publish. Completeness of the set of legs is
     guaranteed upstream: this workflow only runs when the whole `Containers`
     matrix succeeded (workflow_run.conclusion == 'success'), and the build's
-    artifact uploads are unconditional — so a successful run has every leg.
+    artifact uploads are unconditional, so a successful run has every leg.
     """
     items: list[PublishItem] = []
     seen_labels: set[str] = set()

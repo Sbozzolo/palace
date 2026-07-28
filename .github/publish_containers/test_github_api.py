@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the REAL GitHubApi methods (ref_sha / pr_for_head / pr_has_label).
 
 test_authorize.py exercises decide() against a FakeApi, which necessarily

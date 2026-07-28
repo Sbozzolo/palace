@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the container-publish plan (pure logic; no I/O).
 
 Run: python3 -m unittest discover -s .github/publish -p 'test_*.py'
