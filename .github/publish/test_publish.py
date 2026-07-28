@@ -42,6 +42,17 @@ class ArchLabel(unittest.TestCase):
         with self.assertRaises(ValueError):
             arch_label_from_image("palace-onlylabel")
 
+    def test_rejects_non_hex_trailing_segment(self):
+        # A loose last-hyphen split would read this as label "foo", hash "latest".
+        with self.assertRaises(ValueError):
+            arch_label_from_image("palace-foo-latest")
+
+    def test_rejects_hyphen_in_label(self):
+        # Arch labels are [a-z0-9_] (no hyphens); a hyphenated label is invalid,
+        # not silently absorbed.
+        with self.assertRaises(ValueError):
+            arch_label_from_image("palace-a-b-deadbee")
+
 
 class S3Prefix(unittest.TestCase):
     def test_main(self):
@@ -94,6 +105,49 @@ class Plan(unittest.TestCase):
         self.assertTrue(item.oci_tar.name.endswith(".tar"))
         self.assertTrue(item.sif.name.endswith(".sif"))
         self.assertIsInstance(item, PublishItem)
+
+
+class PlanGuards(unittest.TestCase):
+    def test_oci_without_sif_is_rejected(self):
+        # A leg with an OCI tar but no SIF must fail the plan (not publish the
+        # OCI then die mid-loop on the missing SIF).
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "palace-aarch64-abc1234-oci").mkdir(parents=True)
+            (root / "palace-aarch64-abc1234-oci" / "palace-aarch64-abc1234.tar").write_text("tar")
+            # no -sif dir
+            with self.assertRaises(ValueError) as cm:
+                plan(root, "main", REGISTRY, ECR_REPO, BUCKET)
+            self.assertIn("no SIF", str(cm.exception))
+
+    def test_duplicate_arch_label_is_rejected(self):
+        # Two legs collapsing to the same arch label would overwrite each other's
+        # tag/key; reject instead.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_artifacts(root, ["palace-aarch64-abc1234", "palace-aarch64-deadbee"])
+            with self.assertRaises(ValueError) as cm:
+                plan(root, "main", REGISTRY, ECR_REPO, BUCKET)
+            self.assertIn("duplicate arch label", str(cm.exception))
+
+    def test_expected_legs_mismatch_is_rejected(self):
+        # A release expects 6 legs; a partial download (5) must fail, not publish
+        # an incomplete release as success.
+        names = [f"palace-{t}-abc1234" for t in
+                 ("x86_64_v3", "x86_64_v4", "sapphirerapids", "aarch64", "neoverse_v1")]  # 5, missing v2
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_artifacts(root, names)
+            with self.assertRaises(ValueError) as cm:
+                plan(root, "0.18.0", REGISTRY, ECR_REPO, BUCKET, expected_legs=6)
+            self.assertIn("expected 6", str(cm.exception))
+
+    def test_expected_legs_match_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_artifacts(root, ["palace-sapphirerapids-abc1234"])
+            items = plan(root, "main", REGISTRY, ECR_REPO, BUCKET, expected_legs=1)
+        self.assertEqual(len(items), 1)
 
 
 if __name__ == "__main__":

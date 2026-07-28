@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -35,19 +36,25 @@ class PublishItem:
     s3_uri: str  # full s3:// destination for the SIF
 
 
+IMAGE_NAME_RE = re.compile(r"^palace-(?P<label>[a-z0-9_]+)-(?P<hash>[0-9a-f]+)$")
+
+
 def arch_label_from_image(image_name: str) -> str:
     """``palace-<arch_label>-<shorthash>`` -> ``<arch_label>``.
 
-    Arch labels are ``[a-z0-9_]`` and the short hash is hex, so stripping the
-    leading ``palace-`` and the trailing ``-<hash>`` is unambiguous.
+    Arch labels are ``[a-z0-9_]`` (no hyphens) and the short hash is hex, so the
+    shape is unambiguous. We MATCH that exact shape rather than split on the last
+    hyphen: a loose split would mis-read e.g. ``palace-foo-latest`` as label
+    ``foo`` (hash ``latest``) or absorb a hyphen into the label, and two names
+    collapsing to one label would then overwrite each other's tag/key.
     """
-    if not image_name.startswith("palace-"):
-        raise ValueError(f"image name '{image_name}' does not start with 'palace-'")
-    rest = image_name[len("palace-"):]
-    label, _, short_hash = rest.rpartition("-")
-    if not label or not short_hash:
-        raise ValueError(f"cannot parse arch label from image name '{image_name}'")
-    return label
+    m = IMAGE_NAME_RE.match(image_name)
+    if not m:
+        raise ValueError(
+            f"image name '{image_name}' is not palace-<label>-<hexhash> "
+            f"(label [a-z0-9_], hash hex)"
+        )
+    return m.group("label")
 
 
 def s3_prefix_for(selector: str) -> str:
@@ -61,17 +68,43 @@ def s3_prefix_for(selector: str) -> str:
     return selector
 
 
-def plan(artifacts_dir: Path, selector: str, registry: str, ecr_repo: str, s3_bucket: str) -> list[PublishItem]:
+def plan(
+    artifacts_dir: Path,
+    selector: str,
+    registry: str,
+    ecr_repo: str,
+    s3_bucket: str,
+    expected_legs: int | None = None,
+) -> list[PublishItem]:
     """Build the publish plan from the downloaded artifacts. Pure; no I/O beyond
-    listing the artifact directory."""
+    reading the artifact directory.
+
+    Every leg must be COMPLETE (both the OCI tar and the SIF present) and its
+    arch label unique, and — when ``expected_legs`` is given — the total count
+    must match. This makes a partial download (e.g. 5 of 6 release targets, or
+    an OCI without its SIF) a hard error rather than a silently incomplete
+    publish reported as success.
+    """
     items: list[PublishItem] = []
+    seen_labels: set[str] = set()
     for oci_tar in sorted(artifacts_dir.glob("*-oci/*.tar")):
         image_name = oci_tar.parent.name[: -len("-oci")]  # strip "-oci" dir suffix
         arch_label = arch_label_from_image(image_name)
+        if arch_label in seen_labels:
+            raise ValueError(f"duplicate arch label '{arch_label}' among artifacts")
+        seen_labels.add(arch_label)
         sif = artifacts_dir / f"{image_name}-sif" / f"{image_name}.sif"
+        if not sif.is_file():
+            raise ValueError(f"leg '{image_name}' has an OCI tar but no SIF at {sif}")
         ecr_tag = f"{registry}/{ecr_repo}:{selector}-{arch_label}"
         s3_uri = f"s3://{s3_bucket}/{s3_prefix_for(selector)}/{arch_label}.sif"
         items.append(PublishItem(image_name, arch_label, oci_tar, sif, ecr_tag, s3_uri))
+
+    if expected_legs is not None and len(items) != expected_legs:
+        raise ValueError(
+            f"expected {expected_legs} build leg(s) for selector '{selector}', "
+            f"found {len(items)}: {sorted(seen_labels)}"
+        )
     return items
 
 
@@ -84,6 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selector", required=True)
     parser.add_argument("--artifacts-dir", default="./artifacts")
+    parser.add_argument(
+        "--expected-legs",
+        type=int,
+        default=None,
+        help="Require exactly this many complete build legs (fail a partial publish).",
+    )
     args = parser.parse_args(argv)
 
     region = os.environ["AWS_REGION"]
@@ -97,7 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"::add-mask::{account_id}")
     registry = f"{account_id}.dkr.ecr.{region}.amazonaws.com"
 
-    items = plan(Path(args.artifacts_dir), args.selector, registry, ecr_repo, s3_bucket)
+    try:
+        items = plan(
+            Path(args.artifacts_dir), args.selector, registry, ecr_repo, s3_bucket,
+            expected_legs=args.expected_legs,
+        )
+    except ValueError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 1
     if not items:
         print("::error::no OCI artifacts found to publish", file=sys.stderr)
         return 1

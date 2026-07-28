@@ -123,7 +123,9 @@ class Dispatch(unittest.TestCase):
     def test_dispatch_unsupported_branch_shape_rejected(self):
         # Branch is real and at the built sha, but its name is not the
         # collision-free prefix/name shape -> unsupported for dev publishing.
-        for bad in ("myfeature", "feature-a/b", "a/b/c", "/leading", "team/-dash"):
+        # Includes "team/b\n": $ would accept it (matching before the newline)
+        # and it slug-collides with "team/b-"; \Z rejects it.
+        for bad in ("myfeature", "feature-a/b", "a/b/c", "/leading", "team/-dash", "team/b\n"):
             api = FakeApi(refs={("heads", bad): SHA})
             d = decide(facts(event="workflow_dispatch", head_branch=bad, head_sha=SHA), api)
             self.assertFalse(d.authorized, f"{bad!r} should be rejected")

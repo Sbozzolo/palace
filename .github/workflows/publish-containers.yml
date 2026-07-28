@@ -127,4 +127,17 @@ jobs:
       # .github/publish/publish.py; this step is thin glue.
       - name: Publish OCI images to ECR and SIFs to S3
         shell: bash
-        run: python3 .github/publish/publish.py --selector "${{ needs.authorize.outputs.selector }}"
+        env:
+          SELECTOR: ${{ needs.authorize.outputs.selector }}
+        run: |
+          set -euo pipefail
+          # A release (selector X.Y.Z) builds the 6-target matrix; main and
+          # dev-<branch> builds are a single native leg per build run. Requiring
+          # the exact count makes a partial download a hard failure rather than
+          # a silently incomplete publish.
+          if printf '%s' "$SELECTOR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            EXPECTED_LEGS=6
+          else
+            EXPECTED_LEGS=1
+          fi
+          python3 .github/publish/publish.py --selector "$SELECTOR" --expected-legs "$EXPECTED_LEGS"
