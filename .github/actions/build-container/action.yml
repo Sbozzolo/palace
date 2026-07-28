@@ -39,29 +39,24 @@ runs:
 
         end_timer "Setup podman and apptainer"
 
-    - name: Compute arch label
-      id: meta
-      shell: bash
-      env:
-        # Requested Spack microarchitecture; empty means build native.
-        TARGET: ${{ inputs.target }}
-      run: |
-        # Build for the requested target if given, else the runner's native
-        # microarchitecture. A target must be <= the host's native ISA (the
-        # workflow matrix guarantees this) so build-time binaries can run here.
-        # The label names the image and maps this build's artifacts downstream.
-        ARCH_LABEL="${TARGET:-$(spack arch -t)}"
-        echo "arch_label=${ARCH_LABEL}" >> "$GITHUB_OUTPUT"
-        echo "Arch label: ${ARCH_LABEL}"
-
     - name: Compute image name
       id: name
       shell: bash
       env:
-        ARCH_LABEL: ${{ steps.meta.outputs.arch_label }}
+        # Requested Spack microarchitecture; empty means build native.
+        TARGET: ${{ inputs.target }}
+        # The commit being built. Only makes the image name unique/readable —
+        # not load-bearing (the publish workflow takes the authoritative sha
+        # from the workflow_run payload, not this name).
+        SOURCE_SHA: ${{ github.sha }}
       run: |
-        SHORT_HASH=$(git rev-parse --short HEAD)
-        IMAGE_NAME="palace-${ARCH_LABEL}-${SHORT_HASH}"
+        # Build for the requested target if given, else the runner's native
+        # microarchitecture. A target must be <= the host's native ISA (the
+        # workflow matrix guarantees this) so build-time binaries can run here.
+        # The arch label names the image, from which the publish workflow later
+        # recovers it to tag/key this build's artifacts.
+        ARCH_LABEL="${TARGET:-$(spack arch -t)}"
+        IMAGE_NAME="palace-${ARCH_LABEL}-${SOURCE_SHA:0:7}"
         echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
         echo "Image name: ${IMAGE_NAME}"
 

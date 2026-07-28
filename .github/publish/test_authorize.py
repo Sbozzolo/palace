@@ -26,7 +26,7 @@ class FakeApi:
     def __init__(self, *, refs=None, pr_for_head=None, labels=None):
         # refs: {("heads"|"tags", name): commit_sha}
         self._refs = refs or {}
-        # pr_for_head: {head_sha: (number, head_repo_full_name, state)}
+        # pr_for_head: {(head_sha, head_ref): (number, head_repo_full_name, state)}
         self._pr = pr_for_head or {}
         # labels: {pr_number: set(label names)}
         self._labels = labels or {}
@@ -34,8 +34,8 @@ class FakeApi:
     def ref_sha(self, kind, name):
         return self._refs.get((kind, name))
 
-    def pr_for_head(self, sha):
-        return self._pr.get(sha)
+    def pr_for_head(self, sha, ref):
+        return self._pr.get((sha, ref))
 
     def pr_has_label(self, number, label):
         return label in self._labels.get(number, set())
@@ -116,43 +116,78 @@ class Dispatch(unittest.TestCase):
         self.assertFalse(d.authorized)
 
     def test_dispatch_stale_branch_rejected(self):
-        api = FakeApi(refs={("heads", "b"): OTHER_SHA})
-        d = decide(facts(event="workflow_dispatch", head_branch="b", head_sha=SHA), api)
+        api = FakeApi(refs={("heads", "team/b"): OTHER_SHA})
+        d = decide(facts(event="workflow_dispatch", head_branch="team/b", head_sha=SHA), api)
         self.assertFalse(d.authorized)
+
+    def test_dispatch_unsupported_branch_shape_rejected(self):
+        # Branch is real and at the built sha, but its name is not the
+        # collision-free prefix/name shape -> unsupported for dev publishing.
+        for bad in ("myfeature", "feature-a/b", "a/b/c", "/leading", "team/-dash"):
+            api = FakeApi(refs={("heads", bad): SHA})
+            d = decide(facts(event="workflow_dispatch", head_branch=bad, head_sha=SHA), api)
+            self.assertFalse(d.authorized, f"{bad!r} should be rejected")
+            self.assertIn("not supported", d.reason)
 
 
 class PullRequest(unittest.TestCase):
+    # FakeApi.pr_for_head is keyed on (head_sha, head_ref); facts' head_branch
+    # is the ref, so the key must be (SHA, <branch>).
     def test_labeled_open_same_repo_pr_authorizes(self):
-        api = FakeApi(pr_for_head={SHA: (840, REPO, "open")}, labels={840: {"push-containers"}})
-        d = decide(facts(event="pull_request", head_branch="feat", head_sha=SHA), api)
+        api = FakeApi(pr_for_head={(SHA, "team/feat"): (840, REPO, "open")}, labels={840: {"push-containers"}})
+        d = decide(facts(event="pull_request", head_branch="team/feat", head_sha=SHA), api)
         self.assertTrue(d.authorized)
-        self.assertEqual(d.selector, "dev-feat")
+        self.assertEqual(d.selector, "dev-team-feat")
+
+    def test_labeled_pr_unsupported_branch_shape_rejected(self):
+        # Passes fork/open/label, but the branch name is not the supported shape.
+        api = FakeApi(pr_for_head={(SHA, "flat-name"): (843, REPO, "open")}, labels={843: {"push-containers"}})
+        d = decide(facts(event="pull_request", head_branch="flat-name", head_sha=SHA), api)
+        self.assertFalse(d.authorized)
+        self.assertIn("not supported", d.reason)
 
     def test_unlabeled_pr_rejected(self):
-        api = FakeApi(pr_for_head={SHA: (841, REPO, "open")}, labels={841: {"no-long-tests"}})
-        d = decide(facts(event="pull_request", head_sha=SHA), api)
+        api = FakeApi(pr_for_head={(SHA, "team/x"): (841, REPO, "open")}, labels={841: {"no-long-tests"}})
+        d = decide(facts(event="pull_request", head_branch="team/x", head_sha=SHA), api)
         self.assertFalse(d.authorized)
         self.assertIn("label", d.reason)
 
     def test_closed_but_labeled_pr_rejected(self):
         # A closed (or merged) PR must not publish even if it still carries the label.
-        api = FakeApi(pr_for_head={SHA: (842, REPO, "closed")}, labels={842: {"push-containers"}})
-        d = decide(facts(event="pull_request", head_sha=SHA), api)
+        api = FakeApi(pr_for_head={(SHA, "team/x"): (842, REPO, "closed")}, labels={842: {"push-containers"}})
+        d = decide(facts(event="pull_request", head_branch="team/x", head_sha=SHA), api)
         self.assertFalse(d.authorized)
         self.assertIn("not open", d.reason)
 
     def test_no_pr_heads_this_sha_rejected(self):
         # e.g. the sha is a main commit or only a member of a PR, not its head
-        d = decide(facts(event="pull_request", head_sha=SHA), FakeApi(pr_for_head={}))
+        d = decide(facts(event="pull_request", head_branch="team/x", head_sha=SHA), FakeApi(pr_for_head={}))
         self.assertFalse(d.authorized)
         self.assertIn("no PR", d.reason)
 
     def test_fork_pr_via_head_repo_rejected(self):
         # Same-repo base check passed, but the PR's own head repo is a fork.
-        api = FakeApi(pr_for_head={SHA: (900, "attacker/palace", "open")}, labels={900: {"push-containers"}})
-        d = decide(facts(event="pull_request", head_sha=SHA), api)
+        api = FakeApi(pr_for_head={(SHA, "team/x"): (900, "attacker/palace", "open")}, labels={900: {"push-containers"}})
+        d = decide(facts(event="pull_request", head_branch="team/x", head_sha=SHA), api)
         self.assertFalse(d.authorized)
         self.assertIn("fork", d.reason)
+
+    def test_shared_commit_picks_pr_for_the_built_branch(self):
+        # Two PRs share the built commit: an authorized labeled PR on the branch
+        # that built (team/real), and an UNLABELED PR on another branch at the
+        # same sha (team/evil). Matching on ref must pick the built branch's PR,
+        # not inherit the other's authorization. Here the build is team/evil
+        # (unlabeled) and must be rejected despite team/real carrying the label.
+        api = FakeApi(
+            pr_for_head={
+                (SHA, "team/real"): (10, REPO, "open"),
+                (SHA, "team/evil"): (11, REPO, "open"),
+            },
+            labels={10: {"push-containers"}},  # only the real branch's PR is labeled
+        )
+        d = decide(facts(event="pull_request", head_branch="team/evil", head_sha=SHA), api)
+        self.assertFalse(d.authorized)
+        self.assertIn("label", d.reason)  # checked #11's (absent) label, not #10's
 
 
 class UnknownEvent(unittest.TestCase):

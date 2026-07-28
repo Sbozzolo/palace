@@ -31,6 +31,16 @@ from typing import Protocol
 PUSH_CONTAINERS_LABEL = "push-containers"
 RELEASE_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
+# Dev-channel (dispatch / labeled-PR) branch names must match this shape:
+# a hyphen-free, slash-free prefix, exactly one "/", then a segment with no
+# further "/". This is the set on which slugify() (which maps every
+# non-[A-Za-z0-9_.-] char to "-") is INJECTIVE: the single "/" becomes the only
+# possible source of the first "-" in the slug, so no two accepted branches can
+# collapse to the same dev-<slug> selector (e.g. "feature/a-b" is accepted but
+# "feature-a/b" is not, so the pair that used to collide no longer can).
+# Other branch shapes are simply unsupported for publishing for now.
+DEV_BRANCH_RE = re.compile(r"^[A-Za-z0-9_.]+/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
 
 @dataclass(frozen=True)
 class Facts:
@@ -59,12 +69,22 @@ class GitHubApiPort(Protocol):
     """
 
     def ref_sha(self, kind: str, name: str) -> str | None: ...
-    def pr_for_head(self, sha: str) -> tuple[int, str, str] | None: ...
+    def pr_for_head(self, sha: str, ref: str) -> tuple[int, str, str] | None: ...
     def pr_has_label(self, number: int, label: str) -> bool: ...
 
 
 def _reject(reason: str) -> Decision:
     return Decision(False, "", reason)
+
+
+def _unsupported_branch_reason(branch: str) -> str:
+    return (
+        f"branch '{branch}' is not supported for dev publishing yet: the name "
+        f"must look like 'prefix/name' (a hyphen-free prefix, one '/', then a "
+        f"name of [A-Za-z0-9_.-] starting alphanumeric), e.g. 'team/my-feature'. "
+        f"This restriction keeps the dev-<branch> selector collision-free. "
+        f"main and release-tag publishing are unaffected."
+    )
 
 
 def slugify(branch: str) -> str:
@@ -113,29 +133,38 @@ class GitHubApi:
             sha = (tag.get("object") or {}).get("sha")
         return sha
 
-    def pr_for_head(self, sha: str) -> tuple[int, str, str] | None:
-        """(PR number, head repo full_name, state) for the PR whose HEAD is ``sha``.
+    def pr_for_head(self, sha: str, ref: str) -> tuple[int, str, str] | None:
+        """(PR number, head repo full_name, state) for the PR whose head is
+        ``sha`` AND whose head branch is ``ref``.
 
-        ``/commits/{sha}/pulls`` also returns PRs that merely *contain* the
-        commit, so we select on ``head.sha`` to get the one it heads. ``state``
-        is "open" or "closed".
+        ``/commits/{sha}/pulls`` returns PRs that merely *contain* the commit
+        (filtered out by matching ``head.sha``), and multiple PRs can share a
+        head commit (e.g. two branches at the same sha) — so we ALSO match
+        ``head.ref`` to pin the PR for the branch that actually built, not some
+        other PR that happens to sit on the same commit. ``state`` is "open" or
+        "closed".
         """
         pulls = self._get(f"repos/{self.repo}/commits/{sha}/pulls")
         if not isinstance(pulls, list):
             return None
         for pr in pulls:
+            if not isinstance(pr, dict):
+                continue
             head = pr.get("head") or {}
-            if head.get("sha") == sha:
+            if head.get("sha") == sha and head.get("ref") == ref:
                 repo = (head.get("repo") or {}).get("full_name") or ""
                 state = pr.get("state") or ""
-                return int(pr["number"]), repo, state
+                number = pr.get("number")
+                if number is None:
+                    return None
+                return int(number), repo, state
         return None
 
     def pr_has_label(self, number: int, label: str) -> bool:
         labels = self._get(f"repos/{self.repo}/issues/{number}/labels")
         if not isinstance(labels, list):
             return False
-        return any(lbl.get("name") == label for lbl in labels)
+        return any(isinstance(lbl, dict) and lbl.get("name") == label for lbl in labels)
 
 
 def decide(facts: Facts, api: GitHubApiPort) -> Decision:
@@ -167,14 +196,16 @@ def decide(facts: Facts, api: GitHubApiPort) -> Decision:
     if facts.event == "workflow_dispatch":
         # Dispatch = publish request for a branch. GitHub gates dispatch to
         # write-access users; require the ref to be a branch at the built sha.
-        if api.ref_sha("heads", facts.head_branch) == facts.head_sha:
-            return Decision(True, f"dev-{slugify(facts.head_branch)}", f"dispatch on branch {facts.head_branch} at {facts.head_sha}")
-        return _reject(f"dispatch ref '{facts.head_branch}' is not a branch at the built sha")
+        if api.ref_sha("heads", facts.head_branch) != facts.head_sha:
+            return _reject(f"dispatch ref '{facts.head_branch}' is not a branch at the built sha")
+        if not DEV_BRANCH_RE.match(facts.head_branch):
+            return _reject(_unsupported_branch_reason(facts.head_branch))
+        return Decision(True, f"dev-{slugify(facts.head_branch)}", f"dispatch on branch {facts.head_branch} at {facts.head_sha}")
 
     if facts.event == "pull_request":
-        pr = api.pr_for_head(facts.head_sha)
+        pr = api.pr_for_head(facts.head_sha, facts.head_branch)
         if pr is None:
-            return _reject(f"no PR has head sha {facts.head_sha}")
+            return _reject(f"no PR has head {facts.head_branch} at {facts.head_sha}")
         number, pr_head_repo, state = pr
         if pr_head_repo != facts.base_repo:
             return _reject(f"PR #{number} head repo '{pr_head_repo}' is a fork")
@@ -182,6 +213,8 @@ def decide(facts: Facts, api: GitHubApiPort) -> Decision:
             return _reject(f"PR #{number} is not open (state '{state}')")
         if not api.pr_has_label(number, PUSH_CONTAINERS_LABEL):
             return _reject(f"PR #{number} does not currently carry the {PUSH_CONTAINERS_LABEL} label")
+        if not DEV_BRANCH_RE.match(facts.head_branch):
+            return _reject(_unsupported_branch_reason(facts.head_branch))
         return Decision(True, f"dev-{slugify(facts.head_branch)}", f"labeled same-repo PR #{number} at {facts.head_sha}")
 
     # Unknown / unsupported event → fail closed.
