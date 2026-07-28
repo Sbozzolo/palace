@@ -1,0 +1,117 @@
+# Container publish workflow.
+#
+# The `Containers` build workflow produces artifacts. This workflow is triggered
+# after `Containers` completes, runs in a trusted environment, and has
+# permissions to push to AWS through a least-privilege OIDC role.
+
+name: Publish Containers
+
+on:
+  workflow_run:
+    workflows: [Containers]
+    types: [completed]
+
+# Least privilege at the workflow level; the job re-declares what it needs.
+permissions: {}
+
+# The publish selector is only known after authorization, so we cannot key
+# concurrency on the exact channel. Use a conservative group keyed on the
+# trusted source ref (head_branch from the workflow_run payload): a newer build
+# on the same ref cancels an older in-flight publish, so a stale `main` (or
+# branch) publish loses gracefully to the newest successful build. Releases use
+# distinct tag refs, so they never cancel each other.
+concurrency:
+  group: publish-containers-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    # Only consider builds that succeeded. Everything else (authorization, fork
+    # rejection, selector derivation) is enforced in steps below.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # The OIDC subject is scoped to this environment
+    # (repo:awslabs/palace:environment:palace-container-publish). The
+    # environment must be created in repo settings and restricted to `main`;
+    # that restriction (plus workflow_run always running from the default
+    # branch) is what limits who can assume the publish role. Creating the
+    # environment + secret requires repo admin.
+    environment: palace-container-publish
+    permissions:
+      id-token: write   # mint the OIDC JWT for AWS
+      actions: read     # download artifacts from the triggering run
+      contents: read    # git-refs / repo lookups via gh
+      pull-requests: read
+    env:
+      AWS_REGION: us-west-2
+      ECR_REPOSITORY: palace
+      S3_CONTAINERS_BUCKET: palace-ci-containers
+      GH_TOKEN: ${{ github.token }}
+      OWNER_REPO: ${{ github.repository }}
+      # From the triggering build run. These are trusted GitHub-provided facts
+      # about the run (event/sha/repos), NOT build-authored content.
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+      BASE_REPO: ${{ github.event.workflow_run.repository.full_name }}
+    steps:
+      # Check out the TRUSTED publish code (authorize.py, etc.). In a
+      # workflow_run event the default ref is the commit the workflow was loaded
+      # from — the default-branch (main) tip — NOT the build's head. We must
+      # never check out the build's ref/SHA here, or PR-controlled code would
+      # run in this credentialed job. No `ref:` is set, so the default (main)
+      # applies. Pinned to a full SHA for this credential-holding workflow.
+      - name: Check out trusted publish code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Decide whether this build may publish and to which selector, from
+      # trusted event facts + live GitHub API lookups (never the build's
+      # artifacts). Logic and its unit tests live in .github/publish/. Emits
+      # authorized / selector to $GITHUB_OUTPUT.
+      - name: Authorize publication and derive selector
+        id: authz
+        shell: bash
+        run: python3 .github/publish/authorize.py
+
+      - name: Download build artifacts
+        if: steps.authz.outputs.authorized == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fetch all artifacts from the exact triggering run. -R is explicit so
+          # the target repo never depends on the checkout's working directory.
+          rm -rf ./artifacts
+          gh run download "$RUN_ID" -R "$OWNER_REPO" --dir ./artifacts
+          echo "Downloaded artifacts:"
+          find ./artifacts -type f -printf '%p (%s bytes)\n'
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.authz.outputs.authorized == 'true'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.PALACE_CONTAINER_PUBLISH_ROLE_ARN }}
+          aws-region: us-west-2
+
+      # Authorize ran minutes ago; downloading artifacts and assuming the role
+      # opened a window in which the moving ref/label could change: Recompute
+      # the decision and fail unless it still authorizes this exact selector, so
+      # a stale ref/removed label aborts before any write.
+      - name: Re-verify authorization before publishing
+        if: steps.authz.outputs.authorized == 'true'
+        shell: bash
+        run: python3 .github/publish/authorize.py --reverify "${{ steps.authz.outputs.selector }}"
+
+      # Publish each downloaded build leg: OCI tar -> ECR (skopeo), SIF -> S3.
+      # Plan (arch-label parse, tag/key mapping) and its tests live in
+      # .github/publish/publish.py; this step is thin glue.
+      - name: Publish OCI images to ECR and SIFs to S3
+        if: steps.authz.outputs.authorized == 'true'
+        shell: bash
+        run: python3 .github/publish/publish.py --selector "${{ steps.authz.outputs.selector }}"
+
+      - name: Skipped (not authorized)
+        if: steps.authz.outputs.authorized != 'true'
+        shell: bash
+        run: echo "Build was not authorized to publish; nothing published."
