@@ -507,9 +507,23 @@ publish. Which channel a build publishes to depends on the event:
 | Manual dispatch of `Containers` on a branch | `dev-<branch>`    |
 | Pull request labeled `push-containers`      | `dev-<branch>`    |
 
+### What gets built
+
+Regular builds (push to `main`, pull requests, and manual dispatches) build only
+each runner's native microarchitecture:
+
+  - `sapphirerapids` (x64)
+  - `neoverse_v1` (arm64)
+
+Release tags (`vX.Y.Z`) build the full microarchitecture matrix instead, so
+a release publishes a tuned image for each target:
+
+  - `x86_64_v3`, `x86_64_v4`, `sapphirerapids` (x64)
+  - `aarch64`, `neoverse_v1`, `neoverse_v2` (arm64)
+
 ### Publishing a `dev-<branch>` prototype from a branch
 
-To publsih a `dev-<branch>` container, just trigger the `Containers` workflow.
+To publish a `dev-<branch>` container, just trigger the `Containers` workflow.
 Using the [GitHub CLI](https://cli.github.com/):
 
 ```bash
@@ -523,8 +537,7 @@ gh run list --workflow=containers.yml --branch "$branch" --limit 1
 gh run watch <run-id-from-above>
 ```
 
-From the web UI the same control is under `Actions → Containers → Run
-workflow``, where you pick the branch.
+From the web UI the same control is under `Actions → Containers → Run workflow`, where you pick the branch.
 
 Alternatively, apply the `push-containers` label to a pull request to publish
 its `dev-<branch>` prototype and keep it updated as you push new commits.
