@@ -492,6 +492,63 @@ spack spec local.palace@develop
 will show you the spec for your most recent `palace` package, which you can
 compare with the one for `builtin.palace@develop`.
 
+## Publishing containers
+
+Palace containers are built by the `Containers` workflow and published by a
+separate, trusted `Publish Containers` workflow. The build itself holds no
+cloud credentials and makes no publish decision; it only produces artifacts.
+After a build completes, `Publish Containers` (which always runs from `main`)
+independently decides — from the triggering event, verified against the GitHub
+API — whether and where to publish, and only then obtains short-lived
+credentials. This means the publish decision cannot be altered by the code under
+test.
+
+What gets published, by event:
+
+| Event | Published channel |
+|---|---|
+| Push to `main` | `main` (rolling) |
+| Push of a release tag `vX.Y.Z` | `X.Y.Z` (immutable release) |
+| Manual dispatch of `Containers` on a branch | `dev-<branch>` prototype |
+| Pull request labeled `push-containers` | `dev-<branch>` prototype |
+
+### Publishing a `dev-<branch>` prototype from a branch
+
+Dispatching the `Containers` workflow **is** a request to publish that branch;
+there is no separate "push" toggle. GitHub only lets users with write access
+dispatch a workflow, and forks can never be dispatched or promoted.
+
+Using the [GitHub CLI](https://cli.github.com/):
+
+```bash
+# Build and publish a dev-<branch> prototype from the current branch.
+branch=$(git branch --show-current)
+gh workflow run containers.yml --ref "$branch"
+
+# Then follow the run (give it a moment to register), and note that publication
+# happens afterward in the separate Publish Containers workflow:
+gh run list --workflow=containers.yml --branch "$branch" --limit 1
+gh run watch <run-id-from-above>
+```
+
+From the web UI the same control is under **Actions → Containers → Run
+workflow**, where you pick the branch.
+
+Alternatively, apply the `push-containers` label to a pull request to publish
+its `dev-<branch>` prototype and keep it updated as you push new commits.
+
+For a build-only run that just checks the image compiles without publishing,
+open a pull request (an unlabeled PR builds but does not publish).
+
+### Branch-name requirement for dev prototypes
+
+The `dev-<branch>` channel name is derived from the branch name, so a branch
+published this way must be named `prefix/name` — a prefix of `[A-Za-z0-9_.]`
+(no `/`, no `-`), a single `/`, then a name of `[A-Za-z0-9_.-]` starting with an
+alphanumeric (for example `team/my-feature`). Other branch shapes are rejected
+for publishing so that distinct branches can never collapse to the same channel.
+`main` and release-tag publishing are unaffected.
+
 ## Changelog
 
 Code contributions should generally be accompanied by an entry in the
