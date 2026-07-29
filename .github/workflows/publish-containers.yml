@@ -14,6 +14,14 @@ on:
   workflow_run:
     workflows: [Containers]
     types: [completed]
+  # TEMP(fork-test): manual entry point. REMOVE before merge.
+  workflow_dispatch:
+    inputs:
+      source_event: {description: 'event', required: true}
+      head_sha: {description: 'sha', required: true}
+      head_branch: {description: 'branch', required: true}
+      head_repo: {description: 'head repo', required: true}
+      base_repo: {description: 'base repo', required: true}
 
 permissions: {}
 
@@ -21,7 +29,7 @@ jobs:
   authorize:
     # Only consider builds that succeeded. Fork rejection / selector derivation
     # are enforced in authorize.py.
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read       # git-refs / repo lookups via gh
@@ -31,11 +39,11 @@ jobs:
       OWNER_REPO: ${{ github.repository }}
       # From the triggering build run: trusted GitHub-provided facts about the
       # run (event/sha/repos), NOT build-authored content.
-      SOURCE_EVENT: ${{ github.event.workflow_run.event }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-      BASE_REPO: ${{ github.event.workflow_run.repository.full_name }}
+      SOURCE_EVENT: ${{ github.event.workflow_run.event || inputs.source_event }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || inputs.head_branch }}
+      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || inputs.head_repo }}
+      BASE_REPO: ${{ github.event.workflow_run.repository.full_name || inputs.base_repo }}
     outputs:
       authorized: ${{ steps.authz.outputs.authorized }}
       selector: ${{ steps.authz.outputs.selector }}
@@ -84,11 +92,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       OWNER_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.event.workflow_run.id }}
-      SOURCE_EVENT: ${{ github.event.workflow_run.event }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-      BASE_REPO: ${{ github.event.workflow_run.repository.full_name }}
+      SOURCE_EVENT: ${{ github.event.workflow_run.event || inputs.source_event }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || inputs.head_branch }}
+      HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || inputs.head_repo }}
+      BASE_REPO: ${{ github.event.workflow_run.repository.full_name || inputs.base_repo }}
     steps:
       # Trusted publish code again (this is a separate job/runner from authorize).
       - name: Check out trusted publish code
